@@ -1,35 +1,3 @@
-export const readOnceClearCache = {
-  description: "Clear a file from the read-once hook cache. Use this when the file was evicted from your context and the hook is blocking you from reading it again.",
-  args: {
-    filePath: {
-      type: "string",
-      description: "Absolute or relative path to the file to clear from cache",
-    },
-  },
-  async execute({ filePath }, { directory, sessionID, sessionId, threadID, threadId, conversationID, conversationId }) {
-    const binary = {{.Binary}}
-    let resolvedPath = filePath
-    if (!resolvedPath.startsWith("/")) {
-      resolvedPath = `${directory}/${resolvedPath}`
-    }
-    const session = String(sessionID || sessionId || threadID || threadId || conversationID || conversationId || "opencode-session")
-    
-    const proc = Bun.spawn([binary, "clear-file", session, resolvedPath], {
-      stdout: "pipe",
-      stderr: "pipe",
-      {{.EnvBlock}}
-    })
-    const out = await new Response(proc.stdout).text()
-    const err = await new Response(proc.stderr).text()
-    await proc.exited
-    
-    if (proc.exitCode !== 0) {
-      throw new Error(`Failed to clear cache: ${err || out}`)
-    }
-    return out.trim() || `Successfully cleared ${filePath} from cache. You can now read it again.`
-  }
-}
-
 export const ReadOncePlugin = async ({ directory }) => {
   const binary = {{.Binary}}
   const runHook = async (payload) => {
@@ -64,13 +32,13 @@ export const ReadOncePlugin = async ({ directory }) => {
       const session = String(input?.sessionID || input?.sessionId || input?.threadID || input?.threadId || input?.conversationID || input?.conversationId || "opencode-session")
       const cwd = String(input?.cwd || directory || "")
       let payload = null
-      if (tool === "read") {
+      if (tool === "read" || tool === "default_api:read") {
         const filePath = String(args.filePath || args.file_path || args.path || "")
         if (!filePath) return
         payload = { tool_name: "Read", tool_input: { file_path: filePath }, session_id: session, cwd }
         if (args.offset !== undefined) payload.tool_input.offset = args.offset
         if (args.limit !== undefined) payload.tool_input.limit = args.limit
-      } else if (tool === "bash") {
+      } else if (tool === "bash" || tool === "default_api:bash") {
         const command = String(args.command || "")
         if (!command) return
         payload = { tool_name: "Bash", tool_input: { command }, session_id: session, cwd }

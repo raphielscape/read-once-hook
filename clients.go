@@ -15,6 +15,9 @@ import (
 //go:embed templates/opencode_plugin.js.tmpl
 var openCodePluginTmpl string
 
+//go:embed templates/opencode_tool.js.tmpl
+var openCodeToolTmpl string
+
 // pluginTemplateData is the data contract for opencode_plugin.js.tmpl.
 // Binary must be a pre-quoted JS string literal (use strconv.Quote).
 // EnvBlock is the raw JS snippet placed inside the Bun.spawn options object.
@@ -53,9 +56,24 @@ func installOpenCodeHook(cacheDir, sourceExe, installedCLI string) error {
 	if err := writeFileAtomic(pluginFile, []byte(pluginBody), 0o644); err != nil {
 		return err
 	}
+
+	toolDir := filepath.Join(filepath.Dir(settingsFile), "tools")
+	if err := os.MkdirAll(toolDir, 0o755); err != nil {
+		return err
+	}
+	toolFile := filepath.Join(toolDir, "readOnceClearCache.js")
+	toolBody, err := renderOpenCodeTool(installedCLI, true)
+	if err != nil {
+		return fmt.Errorf("render tool template: %w", err)
+	}
+	if err := writeFileAtomic(toolFile, []byte(toolBody), 0o644); err != nil {
+		return err
+	}
+
 	fmt.Println("read-once hook installed for opencode.")
 	fmt.Printf("Binary: %s\n", installedCLI)
 	fmt.Printf("Plugin: %s\n", pluginFile)
+	fmt.Printf("Tool:   %s\n", toolFile)
 	return nil
 }
 
@@ -79,8 +97,23 @@ func optimizeOpenCodePlugin(settingsFile, hookCommand string) error {
 	if err := writeFileAtomic(pluginFile, []byte(pluginBody), 0o644); err != nil {
 		return err
 	}
+
+	toolDir := filepath.Join(filepath.Dir(settingsFile), "tools")
+	if err := os.MkdirAll(toolDir, 0o755); err != nil {
+		return err
+	}
+	toolFile := filepath.Join(toolDir, "readOnceClearCache.js")
+	toolBody, err := renderOpenCodeTool(binary, true)
+	if err != nil {
+		return fmt.Errorf("render tool template: %w", err)
+	}
+	if err := writeFileAtomic(toolFile, []byte(toolBody), 0o644); err != nil {
+		return err
+	}
+
 	fmt.Println("Optimized read-once OpenCode plugin configuration applied.")
 	fmt.Printf("Plugin: %s\n", pluginFile)
+	fmt.Printf("Tool:   %s\n", toolFile)
 	return nil
 }
 
@@ -121,6 +154,38 @@ func renderOpenCodePlugin(binary string, optimized bool) (string, error) {
 		EnvBlock: envBlock,
 	}); err != nil {
 		return "", fmt.Errorf("execute plugin template: %w", err)
+	}
+	return buf.String(), nil
+}
+
+// renderOpenCodeTool renders the OpenCode JS tool from the embedded template.
+func renderOpenCodeTool(binary string, optimized bool) (string, error) {
+	envBlock := "env: process.env,"
+	if optimized {
+		envBlock = `env: {
+      ...process.env,
+      READ_ONCE_CLIENT: "opencode",
+      READ_ONCE_MODE: "deny",
+      READ_ONCE_MODE_UNCHANGED: "deny",
+      READ_ONCE_MODE_CHANGED: "allow",
+      READ_ONCE_DIFF: "1",
+      READ_ONCE_DIFF_MAX: "80",
+      READ_ONCE_DIFF_SUMMARY_MAX_HUNKS: "16",
+      READ_ONCE_HASH: "1",
+      READ_ONCE_HASH_ALGO: "xxhash",
+      READ_ONCE_MAX_BYTES: "524288",
+    },`
+	}
+	tmpl, err := template.New("opencode_tool").Parse(openCodeToolTmpl)
+	if err != nil {
+		return "", fmt.Errorf("parse tool template: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, pluginTemplateData{
+		Binary:   strconv.Quote(binary),
+		EnvBlock: envBlock,
+	}); err != nil {
+		return "", fmt.Errorf("execute tool template: %w", err)
 	}
 	return buf.String(), nil
 }
