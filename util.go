@@ -257,6 +257,22 @@ func asString(v any) string {
 	return s
 }
 
+func asInt(v any) int {
+	switch val := v.(type) {
+	case float64:
+		return int(val)
+	case int:
+		return val
+	case int64:
+		return int(val)
+	case string:
+		if i, err := strconv.Atoi(val); err == nil {
+			return i
+		}
+	}
+	return 0
+}
+
 func asMap(v any) map[string]any {
 	m, _ := v.(map[string]any)
 	return m

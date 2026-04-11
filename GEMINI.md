@@ -140,7 +140,7 @@ The optimized OpenCode install therefore defaults to `READ_ONCE_MODE_UNCHANGED=d
 | `READ_ONCE_MODE` | `warn` | `warn` / `deny` / `allow` |
 | `READ_ONCE_MODE_UNCHANGED` | inherits `READ_ONCE_MODE` | Mode for unchanged-file re-reads |
 | `READ_ONCE_MODE_CHANGED` | inherits `READ_ONCE_MODE` | Mode for changed-file re-reads |
-| `READ_ONCE_TTL` | `1200` | Cache TTL in seconds |
+| `READ_ONCE_TTL` | `300` | Cache TTL in seconds |
 | `READ_ONCE_DIFF` | `0` | `1` = send diff for changed files instead of full re-read |
 | `READ_ONCE_DIFF_MAX` | `40` | Max diff lines before falling back to summary |
 | `READ_ONCE_HASH` | `0` | `1` = validate unchanged reads by content hash |

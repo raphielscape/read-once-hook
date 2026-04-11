@@ -28,6 +28,7 @@ export const ReadOncePlugin = async ({ directory }) => {
     "tool.execute.before": async (input, output) => {
       const tool = String(input?.tool || "").toLowerCase()
       const args = output?.args || {}
+      if (args.bypass) return
       const session = String(input?.sessionID || input?.sessionId || input?.threadID || input?.threadId || input?.conversationID || input?.conversationId || "opencode-session")
       const cwd = String(input?.cwd || directory || "")
       let payload = null

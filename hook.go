@@ -77,9 +77,21 @@ func runHookMode(cacheDir string) error {
 		return nil
 	}
 
-	if toolName == "Read" && (hasKey(toolInput, "offset") || hasKey(toolInput, "limit")) {
-		debugSkip(cacheDir, "partial_read_offset_or_limit", filePath)
-		return nil
+	cacheKey := filePath
+	hasRange := false
+	var readOffset, readLimit int
+	if toolName == "Read" {
+		if hasKey(toolInput, "offset") {
+			readOffset = asInt(toolInput["offset"])
+			hasRange = true
+		}
+		if hasKey(toolInput, "limit") {
+			readLimit = asInt(toolInput["limit"])
+			hasRange = true
+		}
+		if hasRange {
+			cacheKey = fmt.Sprintf("%s:%d:%d", filePath, readOffset, readLimit)
+		}
 	}
 
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
@@ -89,7 +101,7 @@ func runHookMode(cacheDir string) error {
 	defaultMode := getMode(getEnv("READ_ONCE_MODE", "warn"))
 	unchangedMode := getMode(getEnv("READ_ONCE_MODE_UNCHANGED", defaultMode))
 	changedMode := getMode(getEnv("READ_ONCE_MODE_CHANGED", defaultMode))
-	ttl := int64(getEnvInt("READ_ONCE_TTL", 1200))
+	ttl := int64(getEnvInt("READ_ONCE_TTL", 300))
 	diffMode := getEnv("READ_ONCE_DIFF", "0") == "1"
 	diffMax := getEnvInt("READ_ONCE_DIFF_MAX", 40)
 	diffSummaryMaxHunks := getEnvInt("READ_ONCE_DIFF_SUMMARY_MAX_HUNKS", 12)
@@ -108,6 +120,9 @@ func runHookMode(cacheDir string) error {
 	}
 
 	snapDir := filepath.Join(cacheDir, "snapshots")
+	if diffMode && hasRange {
+		diffMode = false // Don't do unified diffs for ranged reads against the full file
+	}
 	if diffMode {
 		_ = os.MkdirAll(snapDir, 0o755)
 	}
@@ -117,7 +132,7 @@ func runHookMode(cacheDir string) error {
 	sessionHash := shortHash(sessionID)
 	cacheFile := filepath.Join(cacheDir, "session-"+sessionHash+".jsonl")
 	statsFile := filepath.Join(cacheDir, "stats.jsonl")
-	pathHash := shortHash(filePath)
+	pathHash := shortHash(cacheKey)
 	snapFile := filepath.Join(snapDir, sessionHash+"-"+pathHash)
 
 	st, err := os.Stat(filePath)
@@ -139,13 +154,22 @@ func runHookMode(cacheDir string) error {
 	if fileSize < 0 {
 		fileSize = 0
 	}
+
+	// Pre-multiply bound check: reject absurd limits that could overflow or are obviously invalid.
+	// 100,000,000 lines is a safe max that guarantees no overflow when multiplied by 50.
+	if hasRange && readLimit > 0 && readLimit < 100000000 {
+		rangeSize := int64(readLimit) * 50
+		if rangeSize < fileSize {
+			fileSize = rangeSize
+		}
+	}
 	estimatedTokens := ((fileSize / 4) * 170) / 100
 	currentHash := ""
 	if hashMode {
 		currentHash = fileContentHash(filePath, hashAlgo)
 	}
 
-	last, ok := readLastCacheEntry(cacheFile, filePath)
+	last, ok := readLastCacheEntry(cacheFile, cacheKey)
 	unchanged := ok && last.Mtime == currentMtime
 	if unchanged && hashMode && last.Hash != "" && currentHash != "" && last.Hash != currentHash {
 		unchanged = false
@@ -157,7 +181,7 @@ func runHookMode(cacheDir string) error {
 		}
 		if entryAge >= ttl {
 			_ = appendJSONLine(cacheFile, cacheEntry{
-				Path:   filePath,
+				Path:   cacheKey,
 				Mtime:  currentMtime,
 				Ts:     now,
 				Tokens: estimatedTokens,
@@ -198,7 +222,7 @@ func runHookMode(cacheDir string) error {
 		diffOutput, diffLines := unifiedDiff(snapFile, filePath)
 		if strings.TrimSpace(diffOutput) != "" && diffLines <= diffMax {
 			_ = appendJSONLine(cacheFile, cacheEntry{
-				Path:   filePath,
+				Path:   cacheKey,
 				Mtime:  currentMtime,
 				Ts:     now,
 				Tokens: estimatedTokens,
@@ -235,7 +259,7 @@ func runHookMode(cacheDir string) error {
 				tokensSaved = 0
 			}
 			_ = appendJSONLine(cacheFile, cacheEntry{
-				Path:   filePath,
+				Path:   cacheKey,
 				Mtime:  currentMtime,
 				Ts:     now,
 				Tokens: estimatedTokens,
@@ -268,7 +292,7 @@ func runHookMode(cacheDir string) error {
 	}
 
 	_ = appendJSONLine(cacheFile, cacheEntry{
-		Path:   filePath,
+		Path:   cacheKey,
 		Mtime:  currentMtime,
 		Ts:     now,
 		Tokens: estimatedTokens,

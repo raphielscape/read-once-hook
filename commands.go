@@ -94,7 +94,7 @@ func showStats(statsFile string) error {
 	if tokensTotal > 0 {
 		savingsPct = (tokensSaved * 100) / tokensTotal
 	}
-	ttl := getEnvInt("READ_ONCE_TTL", 1200)
+	ttl := getEnvInt("READ_ONCE_TTL", 300)
 	ttlMin := ttl / 60
 
 	fmt.Println("read-once - file read deduplication")
@@ -393,7 +393,7 @@ func showStatus(clientName, settingsFile, installedCLI, legacyHook, statsFile st
 		fmt.Println("  Data:          No data yet")
 	}
 
-	ttl := getEnvInt("READ_ONCE_TTL", 1200)
+	ttl := getEnvInt("READ_ONCE_TTL", 300)
 	fmt.Printf("  TTL:           %ds (%dm)\n", ttl, ttl/60)
 	fmt.Printf("  Disabled:      %s\n", getEnv("READ_ONCE_DISABLED", "0"))
 	return nil
@@ -532,7 +532,7 @@ func verify(clientName, settingsFile, configFile, installedCLI, legacyHook, sour
 	mode := getMode(getEnv("READ_ONCE_MODE", "warn"))
 	modeUnchanged := getMode(getEnv("READ_ONCE_MODE_UNCHANGED", mode))
 	modeChanged := getMode(getEnv("READ_ONCE_MODE_CHANGED", mode))
-	ttl := getEnvInt("READ_ONCE_TTL", 1200)
+	ttl := getEnvInt("READ_ONCE_TTL", 300)
 	diff := getEnv("READ_ONCE_DIFF", "0")
 	diffMax := getEnvInt("READ_ONCE_DIFF_MAX", 40)
 	diffSummaryMaxHunks := getEnvInt("READ_ONCE_DIFF_SUMMARY_MAX_HUNKS", 12)
@@ -768,7 +768,7 @@ func printHelp() {
 	fmt.Println("  is already in context. Saves ~2000+ tokens per prevented re-read.")
 	fmt.Println()
 	fmt.Println("Compaction safety:")
-	fmt.Println("  Cache entries expire after READ_ONCE_TTL seconds (default: 1200 = 20m).")
+	fmt.Println("  Cache entries expire after READ_ONCE_TTL seconds (default: 300 = 5m).")
 	fmt.Println("  After expiry, re-reads are allowed because the agent may have compacted")
 	fmt.Println("  the context window and lost the earlier content.")
 	fmt.Println()
@@ -777,7 +777,7 @@ func printHelp() {
 	fmt.Println("                          'deny' blocks reads entirely (maximum savings).")
 	fmt.Println("  READ_ONCE_MODE_UNCHANGED Override mode for unchanged-file re-reads.")
 	fmt.Println("  READ_ONCE_MODE_CHANGED   Override mode for changed-file handling.")
-	fmt.Println("  READ_ONCE_TTL=1200      Cache TTL in seconds (default: 1200)")
+	fmt.Println("  READ_ONCE_TTL=300       Cache TTL in seconds (default: 300)")
 	fmt.Println("  READ_ONCE_DIFF=1        Return inline diff/summary for changed files")
 	fmt.Println("  READ_ONCE_DIFF_MAX=40   Max diff lines before switching to summary")
 	fmt.Println("  READ_ONCE_HASH=1        Validate unchanged reads by content hash")
