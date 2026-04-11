@@ -15,6 +15,19 @@ The hook itself only returns JSON decisions/messages through stdout.
 Claude and Codex can present hook activity differently, so seeing these lines in Codex but 
 not in Claude is expected.
 
+## Installation
+
+1. Build the binary:
+   ```bash
+   go build -o read-once .
+   ```
+2. Run the install command:
+   ```bash
+   ./read-once install
+   ```
+
+The install command automatically detects your client (Claude Code, Codex, or OpenCode) and configures the correct hooks or plugins.
+
 ## Current Install Paths
 
 - Claude defaults: `~/.claude/read-once/read-once hook`

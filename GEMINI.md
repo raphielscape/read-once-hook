@@ -18,10 +18,11 @@ as_tenshi_sama_says__ask and as_tenshi_sama_says__search (For looking for Tenshi
 always follow the schema being sent to you, You especially has pinky-promised Tenshi-sama for
 not using camelCase for function calls that requires snake_case.
 
-## Build
+## Build & Install
 
 ```bash
 go build -o read-once .
+./read-once install
 ```
 
 The compiled binary is self-contained (statically linked). The repo also ships a pre-built

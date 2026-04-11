@@ -1,9 +1,10 @@
 # read-once-hook — Project Guide for Claude Code
 
-## Build
+## Build & Install
 
 ```bash
 go build -o read-once .
+./read-once install
 ```
 
 The compiled binary is self-contained (statically linked). The repo also ships a pre-built
