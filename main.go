@@ -40,6 +40,10 @@ func main() {
 		if err := runHookMode(cfg.cacheDir); err != nil {
 			failf("%v", err)
 		}
+	case "mcp":
+		if err := runMCP(cfg.cacheDir); err != nil {
+			failf("%v", err)
+		}
 	case "stats", "gain":
 		if err := showStats(cfg.statsFile); err != nil {
 			failf("%v", err)

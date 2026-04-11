@@ -7,6 +7,11 @@ go build -o read-once .
 ./read-once install
 ```
 
+To enable the `readOnceClearCache` custom tool in Claude Code, run:
+```bash
+claude mcp add read-once-tools -- ~/.claude/read-once/read-once mcp
+```
+
 The compiled binary is self-contained (statically linked). The repo also ships a pre-built
 `read-once` binary for quick-start installs; rebuild to pick up local changes.
 

@@ -191,6 +191,44 @@ func clearFile(cacheDir, sessionID, filePath string) error {
 	return nil
 }
 
+func clearFileGlobal(cacheDir, filePath string) error {
+	matches, err := filepath.Glob(filepath.Join(cacheDir, "session-*.jsonl"))
+	if err != nil {
+		return err
+	}
+
+	absPath, err := filepath.Abs(filePath)
+	if err == nil {
+		filePath = filepath.Clean(absPath)
+	}
+
+	clearedAny := false
+	for _, cacheFile := range matches {
+		entries, err := readLastCacheEntries(cacheFile)
+		if err != nil {
+			continue
+		}
+		for key := range entries {
+			if key == filePath || strings.HasPrefix(key, filePath+":") {
+				err := appendJSONLine(cacheFile, cacheEntry{
+					Path:   key,
+					Mtime:  "cleared",
+					Ts:     0,
+					Tokens: 0,
+					Hash:   "",
+				})
+				if err == nil {
+					clearedAny = true
+				}
+			}
+		}
+	}
+	if !clearedAny {
+		return nil
+	}
+	return nil
+}
+
 func readLastCacheEntries(cacheFile string) (map[string]cacheEntry, error) {
 	f, err := os.Open(cacheFile)
 	if err != nil {
@@ -844,6 +882,7 @@ func printHelp() {
 	fmt.Println("  read-once status      Quick health check")
 	fmt.Println("  read-once verify      Full diagnostic with dry-run test")
 	fmt.Println("  read-once clear       Clear session cache")
+	fmt.Println("  read-once mcp         Run as MCP server (for Claude Code custom tools)")
 	fmt.Println("  read-once install     Install hook (Claude/Codex hooks JSON, OpenCode plugin)")
 	fmt.Println("  read-once optimize    Apply recommended high-performance hook settings")
 	fmt.Println("  read-once upgrade     Update hook to latest version")
