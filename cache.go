@@ -23,11 +23,13 @@ type eventEntry struct {
 }
 
 type cacheEntry struct {
-	Path   string `json:"path"`
-	Mtime  string `json:"mtime"`
-	Ts     int64  `json:"ts"`
-	Tokens int64  `json:"tokens"`
-	Hash   string `json:"hash,omitempty"`
+	Path          string `json:"path"`
+	Mtime         string `json:"mtime"`
+	Ts            int64  `json:"ts"`
+	Tokens        int64  `json:"tokens"`
+	Hash          string `json:"hash,omitempty"`
+	LastAttemptTs int64  `json:"last_attempt_ts,omitempty"`
+	Attempts      int    `json:"attempts,omitempty"`
 }
 
 func readEvents(path string) ([]eventEntry, error) {

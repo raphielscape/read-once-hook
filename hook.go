@@ -108,6 +108,8 @@ func runHookMode(cacheDir string) error {
 	hashMode := getEnv("READ_ONCE_HASH", "0") == "1"
 	hashAlgo := strings.ToLower(getEnv("READ_ONCE_HASH_ALGO", "xxhash"))
 	maxBytes := int64(getEnvInt("READ_ONCE_MAX_BYTES", 1024*1024))
+	decay := int64(getEnvInt("READ_ONCE_DECAY", 60))
+	autoAllow := getEnvInt("READ_ONCE_AUTO_ALLOW", 2)
 	now := time.Now().Unix()
 
 	if shouldBypassPath(filePath) || !shouldTrackByPolicy(filePath) {
@@ -200,6 +202,42 @@ func runHookMode(cacheDir string) error {
 			return nil
 		}
 
+		attempts := 1
+		if now-last.LastAttemptTs <= decay {
+			attempts = last.Attempts + 1
+		}
+
+		if autoAllow > 0 && attempts >= autoAllow {
+			_ = appendJSONLine(cacheFile, cacheEntry{
+				Path:   cacheKey,
+				Mtime:  currentMtime,
+				Ts:     now,
+				Tokens: estimatedTokens,
+				Hash:   currentHash,
+			})
+			_ = appendJSONLine(statsFile, map[string]any{
+				"ts":      now,
+				"path":    filePath,
+				"tokens":  estimatedTokens,
+				"session": sessionHash,
+				"event":   "auto_allow",
+			})
+			if diffMode {
+				_ = copyFile(filePath, snapFile, 0o644)
+			}
+			return nil
+		}
+
+		_ = appendJSONLine(cacheFile, cacheEntry{
+			Path:          cacheKey,
+			Mtime:         currentMtime,
+			Ts:            last.Ts,
+			Tokens:        estimatedTokens,
+			Hash:          currentHash,
+			LastAttemptTs: now,
+			Attempts:      attempts,
+		})
+
 		_ = appendJSONLine(statsFile, map[string]any{
 			"ts":           now,
 			"path":         filePath,
@@ -214,6 +252,9 @@ func runHookMode(cacheDir string) error {
 			"read-once: %s is already in context (read %dm ago, unchanged; mtime=%s). Re-read allowed after %dm.",
 			filepath.Base(filePath), minutesAgo, currentMtimeDisplay, ttlMin,
 		)
+		if autoAllow > 0 {
+			reason += fmt.Sprintf(" Attempt %d/%d before auto-allow.", attempts, autoAllow)
+		}
 		emitHookDecision(unchangedMode, reason, shouldEmitAllowDecision(cacheDir))
 		return nil
 	}

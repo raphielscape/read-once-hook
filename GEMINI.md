@@ -146,6 +146,8 @@ The optimized OpenCode install therefore defaults to `READ_ONCE_MODE_UNCHANGED=d
 | `READ_ONCE_HASH` | `0` | `1` = validate unchanged reads by content hash |
 | `READ_ONCE_HASH_ALGO` | `xxhash` | `xxhash` or `sha256` |
 | `READ_ONCE_MAX_BYTES` | `1048576` | Skip files larger than this (bytes) |
+| `READ_ONCE_AUTO_ALLOW` | `2` | Auto-allow re-read on the Nth consecutive blocked attempt |
+| `READ_ONCE_DECAY` | `60` | Time window (seconds) to consider attempts consecutive |
 | `READ_ONCE_INCLUDE` | `` | Comma-separated glob/`re:regex` include patterns |
 | `READ_ONCE_EXCLUDE` | `` | Comma-separated glob/`re:regex` exclude patterns |
 | `READ_ONCE_DISABLED` | `0` | `1` = disable hook entirely |
