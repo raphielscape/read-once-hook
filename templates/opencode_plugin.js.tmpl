@@ -1,3 +1,35 @@
+export const readOnceClearCache = {
+  description: "Clear a file from the read-once hook cache. Use this when the file was evicted from your context and the hook is blocking you from reading it again.",
+  args: {
+    filePath: {
+      type: "string",
+      description: "Absolute or relative path to the file to clear from cache",
+    },
+  },
+  async execute({ filePath }, { directory, sessionID, sessionId, threadID, threadId, conversationID, conversationId }) {
+    const binary = {{.Binary}}
+    let resolvedPath = filePath
+    if (!resolvedPath.startsWith("/")) {
+      resolvedPath = `${directory}/${resolvedPath}`
+    }
+    const session = String(sessionID || sessionId || threadID || threadId || conversationID || conversationId || "opencode-session")
+    
+    const proc = Bun.spawn([binary, "clear-file", session, resolvedPath], {
+      stdout: "pipe",
+      stderr: "pipe",
+      {{.EnvBlock}}
+    })
+    const out = await new Response(proc.stdout).text()
+    const err = await new Response(proc.stderr).text()
+    await proc.exited
+    
+    if (proc.exitCode !== 0) {
+      throw new Error(`Failed to clear cache: ${err || out}`)
+    }
+    return out.trim() || `Successfully cleared ${filePath} from cache. You can now read it again.`
+  }
+}
+
 export const ReadOncePlugin = async ({ directory }) => {
   const binary = {{.Binary}}
   const runHook = async (payload) => {

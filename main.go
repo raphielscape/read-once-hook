@@ -48,6 +48,13 @@ func main() {
 		if err := clearSessions(cfg.cacheDir, cfg.statsFile); err != nil {
 			failf("%v", err)
 		}
+	case "clear-file":
+		if len(os.Args) < 4 {
+			failf("Usage: read-once clear-file <session_id> <file_path>")
+		}
+		if err := clearFile(cfg.cacheDir, os.Args[2], os.Args[3]); err != nil {
+			failf("%v", err)
+		}
 	case "install":
 		if err := installHook(cfg.clientName, cfg.settingsFile, cfg.cacheDir, exe, cfg.installedCLI, cfg.hookCommand); err != nil {
 			failf("%v", err)

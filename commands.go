@@ -145,6 +145,28 @@ func showStats(statsFile string) error {
 	return nil
 }
 
+func clearFile(cacheDir, sessionID, filePath string) error {
+	sessionHash := shortHash(sessionID)
+	cacheFile := filepath.Join(cacheDir, "session-"+sessionHash+".jsonl")
+
+	if !fileExists(cacheFile) {
+		return nil // Nothing to clear
+	}
+
+	// We append a "cleared" entry to the log. The easiest way to invalidate
+	// is to write an entry with an Mtime of 0 or a Ts of 0 so it immediately expires.
+	// We'll write an entry with Mtime="cleared" which will definitely trigger a diff/re-read
+	// because it won't match the file's actual Mtime.
+	cacheKey := filePath
+	return appendJSONLine(cacheFile, cacheEntry{
+		Path:   cacheKey,
+		Mtime:  "cleared",
+		Ts:     0,
+		Tokens: 0,
+		Hash:   "",
+	})
+}
+
 func clearSessions(cacheDir, statsFile string) error {
 	matches, err := filepath.Glob(filepath.Join(cacheDir, "session-*.jsonl"))
 	if err != nil {
