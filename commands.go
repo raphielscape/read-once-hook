@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -153,18 +154,63 @@ func clearFile(cacheDir, sessionID, filePath string) error {
 		return nil // Nothing to clear
 	}
 
-	// We append a "cleared" entry to the log. The easiest way to invalidate
-	// is to write an entry with an Mtime of 0 or a Ts of 0 so it immediately expires.
-	// We'll write an entry with Mtime="cleared" which will definitely trigger a diff/re-read
-	// because it won't match the file's actual Mtime.
-	cacheKey := filePath
-	return appendJSONLine(cacheFile, cacheEntry{
-		Path:   cacheKey,
-		Mtime:  "cleared",
-		Ts:     0,
-		Tokens: 0,
-		Hash:   "",
-	})
+	absPath, err := filepath.Abs(filePath)
+	if err == nil {
+		filePath = filepath.Clean(absPath)
+	}
+
+	entries, err := readLastCacheEntries(cacheFile)
+	if err != nil {
+		return err
+	}
+
+	clearedCount := 0
+	for key := range entries {
+		// Clear base path and any ranged variants (e.g., path:0:100)
+		if key == filePath || strings.HasPrefix(key, filePath+":") {
+			err := appendJSONLine(cacheFile, cacheEntry{
+				Path:   key,
+				Mtime:  "cleared",
+				Ts:     0,
+				Tokens: 0,
+				Hash:   "",
+			})
+			if err != nil {
+				if err.Error() == "lock timeout" {
+					return errors.New("failed to acquire cache lock, try again")
+				}
+				return err
+			}
+			clearedCount++
+		}
+	}
+
+	if clearedCount == 0 {
+		return nil
+	}
+	return nil
+}
+
+func readLastCacheEntries(cacheFile string) (map[string]cacheEntry, error) {
+	f, err := os.Open(cacheFile)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	entries := make(map[string]cacheEntry)
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var c cacheEntry
+		if json.Unmarshal([]byte(line), &c) == nil {
+			entries[c.Path] = c
+		}
+	}
+	return entries, sc.Err()
 }
 
 func clearSessions(cacheDir, statsFile string) error {
@@ -393,6 +439,12 @@ func showStatus(clientName, settingsFile, installedCLI, legacyHook, statsFile st
 		} else {
 			fmt.Println("  Plugin:        NOT configured - run: read-once install")
 		}
+		toolFile := filepath.Join(filepath.Dir(settingsFile), "tools", "readOnceClearCache.js")
+		if fileExists(toolFile) {
+			fmt.Printf("  Tool:          Configured in %s\n", toolFile)
+		} else {
+			fmt.Println("  Tool:          NOT configured - run: read-once install")
+		}
 	} else {
 		raw, _ := os.ReadFile(settingsFile)
 		if len(raw) > 0 && strings.Contains(string(raw), "read-once") {
@@ -490,6 +542,17 @@ func verify(clientName, settingsFile, configFile, installedCLI, legacyHook, sour
 				}
 			} else {
 				v.fail(fmt.Sprintf("opencode plugin missing: %s", pluginFile), "read-once install")
+			}
+			toolFile := filepath.Join(filepath.Dir(settingsFile), "tools", "readOnceClearCache.js")
+			if b, readErr := os.ReadFile(toolFile); readErr == nil {
+				v.pass(fmt.Sprintf("opencode tool exists at %s", toolFile))
+				if strings.Contains(string(b), "read-once") {
+					v.pass("opencode tool references read-once binary")
+				} else {
+					v.warn("opencode tool does not appear to reference read-once binary")
+				}
+			} else {
+				v.warn(fmt.Sprintf("opencode tool missing: %s (run read-once install)", toolFile))
 			}
 		} else if strings.HasSuffix(strings.ToLower(strings.TrimSpace(settingsFile)), ".json") {
 			settings, parseErr := parseJSONMap(raw)
@@ -690,12 +753,15 @@ func runConfiguredHook(command, home string, input []byte) (string, int) {
 func uninstall(clientName, settingsFile string) error {
 	if clientName == "opencode" {
 		pluginFile := filepath.Join(filepath.Dir(settingsFile), "plugins", "read-once.js")
-		if err := os.Remove(pluginFile); err == nil || errors.Is(err, os.ErrNotExist) {
-			fmt.Println("read-once plugin removed from opencode plugins directory.")
-			return nil
-		} else {
+		if err := os.Remove(pluginFile); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		toolFile := filepath.Join(filepath.Dir(settingsFile), "tools", "readOnceClearCache.js")
+		if err := os.Remove(toolFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		fmt.Println("read-once plugin and tool removed from opencode directories.")
+		return nil
 	}
 	raw, err := os.ReadFile(settingsFile)
 	if errors.Is(err, os.ErrNotExist) {

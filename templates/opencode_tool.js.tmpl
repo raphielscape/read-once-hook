@@ -7,13 +7,9 @@ export default {
   },
   async execute({ filePath }, { directory, sessionID, sessionId, threadID, threadId, conversationID, conversationId }) {
     const binary = {{.Binary}}
-    let resolvedPath = filePath
-    if (!resolvedPath.startsWith("/")) {
-      resolvedPath = `${directory}/${resolvedPath}`
-    }
     const session = String(sessionID || sessionId || threadID || threadId || conversationID || conversationId || "opencode-session")
     
-    const proc = Bun.spawn([binary, "clear-file", session, resolvedPath], {
+    const proc = Bun.spawn([binary, "clear-file", session, filePath], {
       stdout: "pipe",
       stderr: "pipe",
       {{.EnvBlock}}

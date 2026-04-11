@@ -68,6 +68,13 @@ func runHookMode(cacheDir string) error {
 		asString(in["conversation_id"]),
 		asString(in["thread_id"]),
 	)
+	cwd := asString(in["cwd"])
+	if filePath != "" && cwd != "" && !filepath.IsAbs(filePath) {
+		filePath = filepath.Join(cwd, filePath)
+	}
+	if filePath != "" {
+		filePath = filepath.Clean(filePath)
+	}
 	if filePath == "" || sessionID == "" {
 		if filePath == "" {
 			debugSkip(cacheDir, "path_not_trackable:"+skipReason, asString(toolInput["command"]))

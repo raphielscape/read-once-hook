@@ -64,7 +64,7 @@ func appendJSONLine(path string, v any) error {
 		// Lock timed out under concurrent hook invocations (e.g. parallel Read tool calls).
 		// Skip the write rather than proceed without the lock and risk interleaved JSONL lines.
 		// Under-counted stats are preferable to a corrupted append-only log.
-		return nil
+		return errors.New("lock timeout")
 	}
 	defer release()
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
