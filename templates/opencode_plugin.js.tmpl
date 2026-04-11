@@ -1,0 +1,61 @@
+export const ReadOncePlugin = async ({ directory }) => {
+  const binary = {{.Binary}}
+  const runHook = async (payload) => {
+    const proc = Bun.spawn([binary, "hook"], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "ignore",
+      {{.EnvBlock}}
+    })
+    const body = JSON.stringify(payload)
+    if (proc.stdin && typeof proc.stdin.write === "function") {
+      proc.stdin.write(body)
+      if (typeof proc.stdin.end === "function") {
+        proc.stdin.end()
+      }
+    } else if (proc.stdin && typeof proc.stdin.getWriter === "function") {
+      const writer = proc.stdin.getWriter()
+      await writer.write(new TextEncoder().encode(body))
+      await writer.close()
+    } else {
+      throw new Error("read-once plugin: unable to write payload to subprocess stdin")
+    }
+    const out = await new Response(proc.stdout).text()
+    await proc.exited
+    return out.trim()
+  }
+  return {
+    "tool.execute.before": async (input, output) => {
+      const tool = String(input?.tool || "").toLowerCase()
+      const args = output?.args || {}
+      const session = String(input?.sessionID || input?.sessionId || input?.threadID || input?.threadId || input?.conversationID || input?.conversationId || "opencode-session")
+      const cwd = String(input?.cwd || directory || "")
+      let payload = null
+      if (tool === "read") {
+        const filePath = String(args.filePath || args.file_path || args.path || "")
+        if (!filePath) return
+        payload = { tool_name: "Read", tool_input: { file_path: filePath }, session_id: session, cwd }
+        if (args.offset !== undefined) payload.tool_input.offset = args.offset
+        if (args.limit !== undefined) payload.tool_input.limit = args.limit
+      } else if (tool === "bash") {
+        const command = String(args.command || "")
+        if (!command) return
+        payload = { tool_name: "Bash", tool_input: { command }, session_id: session, cwd }
+      } else {
+        return
+      }
+      const raw = await runHook(payload)
+      if (!raw) return
+      let parsed
+      try {
+        parsed = JSON.parse(raw)
+      } catch {
+        return
+      }
+      const hs = parsed?.hookSpecificOutput || {}
+      if (hs.permissionDecision === "deny") {
+        throw new Error(String(hs.permissionDecisionReason || "read-once denied"))
+      }
+    },
+  }
+}

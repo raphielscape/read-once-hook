@@ -1,0 +1,16 @@
+# Compiled binary — rebuild with: go build -o read-once .
+read-once
+
+# Windows binary
+read-once.exe
+
+# macOS metadata
+.DS_Store
+
+# Go build cache / test artifacts
+*.test
+*.out
+/tmp/
+
+# 1p artifacts
+docs/
