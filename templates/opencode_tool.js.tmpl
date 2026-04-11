@@ -1,10 +1,9 @@
+import { z } from "zod"
+
 export default {
   description: "Clear a file from the read-once hook cache. Use this when the file was evicted from your context and the hook is blocking you from reading it again.",
   args: {
-    filePath: {
-      type: "string",
-      description: "Absolute or relative path to the file to clear from cache",
-    },
+    filePath: z.string().describe("Absolute or relative path to the file to clear from cache"),
   },
   async execute({ filePath }, { directory, sessionID, sessionId, threadID, threadId, conversationID, conversationId }) {
     const binary = {{.Binary}}
