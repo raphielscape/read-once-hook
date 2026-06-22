@@ -1,0 +1,55 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - gocritic
+    - goconst
+    - misspell
+    - unconvert
+    - errorlint
+    - copyloopvar
+    - dupword
+    - durationcheck
+    - nilerr
+    - nilnesserr
+    - goprintffuncname
+    - asciicheck
+    - bidichk
+    - intrange
+  settings:
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close
+        - os.Remove
+        - os.RemoveAll
+        - os.Chtimes
+        - os.WriteFile
+    govet:
+      disable:
+        - fieldalignment
+        - shadow
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        - hugeParam
+        - rangeValCopy
+        - unnamedResult
+    goconst:
+      min-len: 3
+      min-occurrences: 10
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - goconst
+          - gocritic

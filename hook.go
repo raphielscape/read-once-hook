@@ -19,7 +19,7 @@ func runHookMode(cacheDir string) error {
 
 	inputRaw, err := io.ReadAll(os.Stdin)
 	if err != nil {
-		return nil
+		return nil //nolint:nilerr // hook must not crash on read errors
 	}
 	if len(bytes.TrimSpace(inputRaw)) == 0 {
 		return nil
@@ -27,7 +27,7 @@ func runHookMode(cacheDir string) error {
 
 	var in map[string]any
 	if err := json.Unmarshal(inputRaw, &in); err != nil {
-		return nil
+		return nil //nolint:nilerr // hook must not crash on malformed input
 	}
 	toolName := firstString(
 		asString(in["tool_name"]),
@@ -49,7 +49,7 @@ func runHookMode(cacheDir string) error {
 	filePath := ""
 	skipReason := ""
 	switch toolName {
-	case "Read":
+	case toolRead:
 		filePath = firstString(
 			asString(toolInput["file_path"]),
 			asString(toolInput["path"]),
@@ -57,7 +57,7 @@ func runHookMode(cacheDir string) error {
 		if filePath == "" {
 			skipReason = "read_missing_file_path"
 		}
-	case "Bash":
+	case toolBash:
 		filePath, skipReason = extractBashReadPath(toolInput, asString(in["cwd"]))
 	default:
 		debugSkip(cacheDir, "unsupported_tool:"+toolName, "")
@@ -102,10 +102,10 @@ func runHookMode(cacheDir string) error {
 	}
 
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		return nil
+		return nil //nolint:nilerr // hook must not crash if cache dir creation fails
 	}
 
-	defaultMode := getMode(getEnv("READ_ONCE_MODE", "warn"))
+	defaultMode := getMode(getEnv("READ_ONCE_MODE", modeWarn))
 	unchangedMode := getMode(getEnv("READ_ONCE_MODE_UNCHANGED", defaultMode))
 	changedMode := getMode(getEnv("READ_ONCE_MODE_CHANGED", defaultMode))
 	ttl := int64(getEnvInt("READ_ONCE_TTL", 300))
@@ -144,10 +144,97 @@ func runHookMode(cacheDir string) error {
 	pathHash := shortHash(cacheKey)
 	snapFile := filepath.Join(snapDir, sessionHash+"-"+pathHash)
 
+	// Fast path: check cache before stat. On a cache hit with no hash validation,
+	// skip the os.Stat + isLikelyBinary + maxBytes checks entirely — the file was
+	// already validated when first read.
+	last, ok := readLastCacheEntry(cacheFile, cacheKey)
+	if ok && !hashMode {
+		currentMtime := last.Mtime
+		entryAge := now - last.Ts
+		if last.Ts <= 0 {
+			entryAge = 0
+		}
+		if entryAge >= ttl {
+			_ = appendJSONLine(cacheFile, cacheEntry{
+				Path:   cacheKey,
+				Mtime:  currentMtime,
+				Ts:     now,
+				Tokens: 0,
+				Hash:   "",
+			})
+			_ = appendJSONLine(statsFile, map[string]any{
+				"ts":      now,
+				"path":    filePath,
+				"tokens":  0,
+				"session": sessionHash,
+				"event":   eventExpired,
+			})
+			if diffMode {
+				_ = copyFile(filePath, snapFile, 0o644)
+			}
+			return nil
+		}
+
+		attempts := 1
+		if now-last.LastAttemptTs <= decay {
+			attempts = last.Attempts + 1
+		}
+		if autoAllow > 0 && attempts >= autoAllow {
+			_ = appendJSONLine(cacheFile, cacheEntry{
+				Path:   cacheKey,
+				Mtime:  currentMtime,
+				Ts:     now,
+				Tokens: 0,
+				Hash:   "",
+			})
+			_ = appendJSONLine(statsFile, map[string]any{
+				"ts":      now,
+				"path":    filePath,
+				"tokens":  0,
+				"session": sessionHash,
+				"event":   eventAutoAllow,
+			})
+			if diffMode {
+				_ = copyFile(filePath, snapFile, 0o644)
+			}
+			return nil
+		}
+
+		_ = appendJSONLine(cacheFile, cacheEntry{
+			Path:          cacheKey,
+			Mtime:         currentMtime,
+			Ts:            last.Ts,
+			Tokens:        0,
+			Hash:          "",
+			LastAttemptTs: now,
+			Attempts:      attempts,
+		})
+		_ = appendJSONLine(statsFile, map[string]any{
+			"ts":           now,
+			"path":         filePath,
+			"tokens_saved": 0,
+			"session":      sessionHash,
+			"event":        eventHit,
+		})
+
+		minutesAgo := entryAge / 60
+		ttlMin := ttl / 60
+		reason := fmt.Sprintf(
+			"read-once: %s is already in context (read %dm ago, unchanged; mtime=%s). Re-read allowed after %dm.",
+			filepath.Base(filePath), minutesAgo, formatUnixMtime(currentMtime), ttlMin,
+		)
+		if autoAllow > 0 {
+			reason += fmt.Sprintf(" Attempt %d/%d before auto-allow.", attempts, autoAllow)
+		}
+		emitHookDecision(unchangedMode, reason, shouldEmitAllowDecision(cacheDir))
+		return nil
+	}
+
+	// Slow path: stat the file for cache miss, changed file, or hash validation.
 	st, err := os.Stat(filePath)
 	if err != nil || st.IsDir() {
 		debugSkip(cacheDir, "file_stat_failed_or_directory", filePath)
-		return nil
+		return nil //nolint:nilerr // missing/unreadable files are silently skipped
 	}
 	if maxBytes > 0 && st.Size() > maxBytes {
 		debugSkip(cacheDir, "file_too_large", filePath)
@@ -178,7 +265,6 @@ func runHookMode(cacheDir string) error {
 		currentHash = fileContentHash(filePath, hashAlgo)
 	}
 
-	last, ok := readLastCacheEntry(cacheFile, cacheKey)
 	unchanged := ok && last.Mtime == currentMtime
 	if unchanged && hashMode && last.Hash != "" && currentHash != "" && last.Hash != currentHash {
 		unchanged = false
@@ -201,7 +287,7 @@ func runHookMode(cacheDir string) error {
 				"path":    filePath,
 				"tokens":  estimatedTokens,
 				"session": sessionHash,
-				"event":   "expired",
+				"event":   eventExpired,
 			})
 			if diffMode {
 				_ = copyFile(filePath, snapFile, 0o644)
@@ -227,7 +313,7 @@ func runHookMode(cacheDir string) error {
 				"path":    filePath,
 				"tokens":  estimatedTokens,
 				"session": sessionHash,
-				"event":   "auto_allow",
+				"event":   eventAutoAllow,
 			})
 			if diffMode {
 				_ = copyFile(filePath, snapFile, 0o644)
@@ -250,7 +336,7 @@ func runHookMode(cacheDir string) error {
 			"path":         filePath,
 			"tokens_saved": estimatedTokens,
 			"session":      sessionHash,
-			"event":        "hit",
+			"event":        eventHit,
 		})
 
 		minutesAgo := entryAge / 60
@@ -288,7 +374,7 @@ func runHookMode(cacheDir string) error {
 				"path":         filePath,
 				"tokens_saved": tokensSaved,
 				"session":      sessionHash,
-				"event":        "diff",
+				"event":        eventDiff,
 			})
 
 			reason := fmt.Sprintf(
@@ -319,7 +405,7 @@ func runHookMode(cacheDir string) error {
 				"path":         filePath,
 				"tokens_saved": tokensSaved,
 				"session":      sessionHash,
-				"event":        "diff",
+				"event":        eventDiff,
 			})
 			reason := fmt.Sprintf(
 				"read-once: %s changed since last read (previous mtime=%s, current mtime=%s). Full diff was too large, so here is a compact summary:\n\n%s",
@@ -330,7 +416,7 @@ func runHookMode(cacheDir string) error {
 		}
 	}
 
-	if changedMode == "deny" {
+	if changedMode == modeDeny {
 		reason := fmt.Sprintf(
 			"read-once: %s changed since last read (previous mtime=%s, current mtime=%s); re-read is blocked.",
 			filepath.Base(filePath), formatUnixMtime(last.Mtime), currentMtimeDisplay,
@@ -349,9 +435,9 @@ func runHookMode(cacheDir string) error {
 	if diffMode {
 		_ = copyFile(filePath, snapFile, 0o644)
 	}
-	event := "miss"
+	event := eventMiss
 	if ok {
-		event = "changed"
+		event = eventChanged
 	}
 	_ = appendJSONLine(statsFile, map[string]any{
 		"ts":      now,
@@ -364,16 +450,16 @@ func runHookMode(cacheDir string) error {
 }
 
 func emitHookDecision(mode, reason string, emitAllow bool) {
-	if mode == "allow" {
+	if mode == modeAllow {
 		return
 	}
-	if mode == "deny" {
+	if mode == modeDeny {
 		// Keep PreToolUse output schema minimal and explicit for Codex:
 		// return only hookSpecificOutput fields, no extra top-level keys.
 		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
 			"hookSpecificOutput": map[string]any{
 				"hookEventName":            "PreToolUse",
-				"permissionDecision":       "deny",
+				"permissionDecision":       modeDeny,
 				"permissionDecisionReason": reason,
 			},
 		})
@@ -385,26 +471,30 @@ func emitHookDecision(mode, reason string, emitAllow bool) {
 	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
 		"hookSpecificOutput": map[string]any{
 			"hookEventName":            "PreToolUse",
-			"permissionDecision":       "allow",
+			"permissionDecision":       modeAllow,
 			"permissionDecisionReason": reason,
 		},
 	})
 }
 
+func isCodexClient(cacheDir string) bool {
+	return strings.Contains(filepath.ToSlash(cacheDir), "/.codex/read-once")
+}
+
 func shouldEmitAllowDecision(cacheDir string) bool {
 	// Codex currently rejects PreToolUse permissionDecision:"allow".
 	// Return no hook output for warn-mode in Codex; deny-mode still emits.
-	return !strings.Contains(filepath.ToSlash(cacheDir), "/.codex/read-once")
+	return !isCodexClient(cacheDir)
 }
 
 func getMode(v string) string {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "deny":
-		return "deny"
+		return modeDeny
 	case "allow":
-		return "allow"
+		return modeAllow
 	default:
-		return "warn"
+		return modeWarn
 	}
 }
 
@@ -425,13 +515,13 @@ func debugSkip(cacheDir, reason, detail string) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // debug log, write error intentionally ignored
 	_, _ = f.WriteString(msg)
 }
 
 func debugHookEnabled(cacheDir string) bool {
 	defaultVal := "0"
-	if strings.Contains(filepath.ToSlash(cacheDir), "/.codex/read-once") {
+	if isCodexClient(cacheDir) {
 		defaultVal = "1"
 	}
 	v := strings.ToLower(strings.TrimSpace(getEnv("READ_ONCE_DEBUG", defaultVal)))

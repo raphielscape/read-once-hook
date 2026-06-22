@@ -117,20 +117,14 @@ func optimizeOpenCodePlugin(settingsFile, hookCommand string) error {
 	return nil
 }
 
-// renderOpenCodePlugin renders the OpenCode JS plugin from the embedded template.
-// binary is the absolute path to the read-once binary on the target machine.
-// optimized=true injects the recommended env vars that maximise token savings
-// (unchanged-reads denied, diff mode enabled, hash validation on).
-func renderOpenCodePlugin(binary string, optimized bool) (string, error) {
-	envBlock := "env: process.env,"
-	if optimized {
-		// OpenCode's tool.execute.before hook returns Promise<void>; its return value is never
-		// captured by Plugin.trigger. The only way to affect tool execution is to throw (deny)
-		// or mutate output.args. There is no advisory channel for "allow" decisions — warn mode
-		// emits allow+reason JSON which the plugin silently discards, making warn identical to
-		// allow (zero token savings). Default unchanged-reads to deny so deduplication actually
-		// fires. Changed files are left on allow so the agent always sees fresh content.
-		envBlock = `env: {
+// openCodeOptimizedEnv is the JS env block injected when optimized=true.
+// OpenCode's tool.execute.before hook returns Promise<void>; its return value is never
+// captured by Plugin.trigger. The only way to affect tool execution is to throw (deny)
+// or mutate output.args. There is no advisory channel for "allow" decisions — warn mode
+// emits allow+reason JSON which the plugin silently discards, making warn identical to
+// allow (zero token savings). Default unchanged-reads to deny so deduplication actually
+// fires. Changed files are left on allow so the agent always sees fresh content.
+const openCodeOptimizedEnv = `env: {
       ...process.env,
       READ_ONCE_CLIENT: "opencode",
       READ_ONCE_MODE: "deny",
@@ -143,51 +137,33 @@ func renderOpenCodePlugin(binary string, optimized bool) (string, error) {
       READ_ONCE_HASH_ALGO: "xxhash",
       READ_ONCE_MAX_BYTES: "524288",
     },`
+
+// renderOpenCodeTemplate renders an OpenCode JS file from an embedded template.
+func renderOpenCodeTemplate(name, tmplStr, binary string, optimized bool) (string, error) {
+	envBlock := "env: process.env,"
+	if optimized {
+		envBlock = openCodeOptimizedEnv
 	}
-	tmpl, err := template.New("opencode_plugin").Parse(openCodePluginTmpl)
+	tmpl, err := template.New(name).Parse(tmplStr)
 	if err != nil {
-		return "", fmt.Errorf("parse plugin template: %w", err)
+		return "", fmt.Errorf("parse %s template: %w", name, err)
 	}
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, pluginTemplateData{
 		Binary:   strconv.Quote(binary),
 		EnvBlock: envBlock,
 	}); err != nil {
-		return "", fmt.Errorf("execute plugin template: %w", err)
+		return "", fmt.Errorf("execute %s template: %w", name, err)
 	}
 	return buf.String(), nil
 }
 
-// renderOpenCodeTool renders the OpenCode JS tool from the embedded template.
+func renderOpenCodePlugin(binary string, optimized bool) (string, error) {
+	return renderOpenCodeTemplate("opencode_plugin", openCodePluginTmpl, binary, optimized)
+}
+
 func renderOpenCodeTool(binary string, optimized bool) (string, error) {
-	envBlock := "env: process.env,"
-	if optimized {
-		envBlock = `env: {
-      ...process.env,
-      READ_ONCE_CLIENT: "opencode",
-      READ_ONCE_MODE: "deny",
-      READ_ONCE_MODE_UNCHANGED: "deny",
-      READ_ONCE_MODE_CHANGED: "allow",
-      READ_ONCE_DIFF: "1",
-      READ_ONCE_DIFF_MAX: "80",
-      READ_ONCE_DIFF_SUMMARY_MAX_HUNKS: "16",
-      READ_ONCE_HASH: "1",
-      READ_ONCE_HASH_ALGO: "xxhash",
-      READ_ONCE_MAX_BYTES: "524288",
-    },`
-	}
-	tmpl, err := template.New("opencode_tool").Parse(openCodeToolTmpl)
-	if err != nil {
-		return "", fmt.Errorf("parse tool template: %w", err)
-	}
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, pluginTemplateData{
-		Binary:   strconv.Quote(binary),
-		EnvBlock: envBlock,
-	}); err != nil {
-		return "", fmt.Errorf("execute tool template: %w", err)
-	}
-	return buf.String(), nil
+	return renderOpenCodeTemplate("opencode_tool", openCodeToolTmpl, binary, optimized)
 }
 
 func isWithinDir(path, dir string) bool {

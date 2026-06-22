@@ -16,6 +16,8 @@ import (
 	xxhash "github.com/cespare/xxhash/v2"
 )
 
+var envRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=.*$`)
+
 // commandSpec holds the parsed environment overrides and argument vector for a
 // hook command string (e.g. "READ_ONCE_MODE=deny ~/.claude/read-once/read-once hook").
 type commandSpec struct {
@@ -36,33 +38,24 @@ func parseJSONMap(raw []byte) (map[string]any, error) {
 	return out, nil
 }
 
-func parseJSONMapSafe(raw []byte) map[string]any {
-	m, err := parseJSONMap(raw)
-	if err != nil {
-		return map[string]any{}
-	}
-	return m
-}
-
-func splitCommand(s string) []string {
-	toks, ok := shellSplit(s)
-	if ok {
-		return toks
-	}
-	return strings.Fields(strings.TrimSpace(s))
-}
-
-func shellSplit(s string) ([]string, bool) {
+// splitBy splits s where isSep returns true (outside quotes), tracking escape sequences.
+// If trimSegments is true, each segment is trimmed and empties are dropped.
+// If preserveEscapes is true, backslashes are kept in output (for pipe splitting where
+// \| should produce a literal pipe, not a split point).
+func splitBy(s string, isSep func(rune) bool, trimSegments, preserveEscapes bool) ([]string, bool) {
 	inSingle := false
 	inDouble := false
 	escaped := false
 	cur := make([]rune, 0, len(s))
-	out := []string{}
+	var out []string
 	flush := func() {
-		if len(cur) == 0 {
-			return
+		seg := string(cur)
+		if trimSegments {
+			seg = strings.TrimSpace(seg)
 		}
-		out = append(out, string(cur))
+		if seg != "" {
+			out = append(out, seg)
+		}
 		cur = cur[:0]
 	}
 	for _, r := range s {
@@ -77,6 +70,9 @@ func shellSplit(s string) ([]string, bool) {
 				cur = append(cur, r)
 				continue
 			}
+			if preserveEscapes {
+				cur = append(cur, r)
+			}
 			escaped = true
 		case '\'':
 			if inDouble {
@@ -90,13 +86,11 @@ func shellSplit(s string) ([]string, bool) {
 				continue
 			}
 			inDouble = !inDouble
-		case ' ', '\t', '\n', '\r':
-			if inSingle || inDouble {
-				cur = append(cur, r)
+		default:
+			if !inSingle && !inDouble && isSep(r) {
+				flush()
 				continue
 			}
-			flush()
-		default:
 			cur = append(cur, r)
 		}
 	}
@@ -104,13 +98,28 @@ func shellSplit(s string) ([]string, bool) {
 		return nil, false
 	}
 	flush()
-	return out, true
+	return out, len(out) > 0
+}
+
+func isWhitespace(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r'
+}
+
+func shellSplit(s string) ([]string, bool) {
+	return splitBy(s, isWhitespace, false, false)
+}
+
+func splitCommand(s string) []string {
+	toks, ok := shellSplit(s)
+	if ok {
+		return toks
+	}
+	return strings.Fields(strings.TrimSpace(s))
 }
 
 func parseCommandSpec(command string) commandSpec {
 	tokens := splitCommand(command)
 	spec := commandSpec{env: map[string]string{}, argv: []string{}}
-	envRe := regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=.*$`)
 	for i, t := range tokens {
 		if len(spec.argv) == 0 && envRe.MatchString(t) {
 			parts := strings.SplitN(t, "=", 2)
@@ -171,36 +180,32 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	return os.Rename(tmpPath, path)
 }
 
-func defaultIfEmpty(s, d string) string {
-	if strings.TrimSpace(s) == "" {
-		return d
-	}
-	return s
-}
-
 func copyFile(src, dst string, mode os.FileMode) error {
-	in, err := os.Open(src)
+	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
-
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
-	if err != nil {
+	if err := os.WriteFile(dst, data, mode); err != nil {
 		return err
 	}
-	defer out.Close()
-
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return out.Chmod(mode)
+	return nil
 }
 
 func filesEqual(a, b string) (bool, error) {
+	sa, err := os.Stat(a)
+	if err != nil {
+		return false, err
+	}
+	sb, err := os.Stat(b)
+	if err != nil {
+		return false, err
+	}
+	if sa.Size() != sb.Size() {
+		return false, nil
+	}
 	ab, err := os.ReadFile(a)
 	if err != nil {
 		return false, err
@@ -342,39 +347,10 @@ func hasReadOnceHookForTool(settings map[string]any, matcherName string) bool {
 	return strings.TrimSpace(readMatcherReadOnceCommand(settings, matcherName)) != ""
 }
 
-func readAnyReadOnceCommand(settings map[string]any) string {
-	hooks, ok := settings["hooks"].(map[string]any)
-	if !ok {
-		return ""
-	}
-	pre, ok := hooks["PreToolUse"].([]any)
-	if !ok {
-		return ""
-	}
-	for _, item := range pre {
-		m, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		hs, ok := m["hooks"].([]any)
-		if !ok || len(hs) == 0 {
-			continue
-		}
-		hm, ok := hs[0].(map[string]any)
-		if !ok {
-			continue
-		}
-		cmd, _ := hm["command"].(string)
-		if strings.Contains(cmd, "read-once") {
-			return cmd
-		}
-	}
-	return ""
-}
+var codexHooksRe = regexp.MustCompile(`(?m)^\s*codex_hooks\s*=\s*true\b`)
 
 func codexHooksEnabled(raw string) bool {
-	re := regexp.MustCompile(`(?m)^\s*codex_hooks\s*=\s*true\b`)
-	return re.MatchString(raw)
+	return codexHooksRe.MatchString(raw)
 }
 
 func fileContentHash(path, algo string) string {
@@ -382,7 +358,7 @@ func fileContentHash(path, algo string) string {
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // read-only file, close error is meaningless
 	var h io.Writer
 	var sumFn func([]byte) []byte
 	switch strings.ToLower(strings.TrimSpace(algo)) {

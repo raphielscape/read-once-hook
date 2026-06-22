@@ -7,6 +7,26 @@ import (
 	"strings"
 )
 
+const (
+	clientClaude   = "claude"
+	clientCodex    = "codex"
+	clientOpenCode = "opencode"
+
+	toolRead = "Read"
+	toolBash = "Bash"
+
+	eventHit       = "hit"
+	eventMiss      = "miss"
+	eventDiff      = "diff"
+	eventExpired   = "expired"
+	eventChanged   = "changed"
+	eventAutoAllow = "auto_allow"
+
+	modeAllow = "allow"
+	modeDeny  = "deny"
+	modeWarn  = "warn"
+)
+
 // appConfig holds the resolved paths and identifiers for the detected client.
 // All path computation lives in loadAppConfig; the rest of the program treats
 // this struct as read-only configuration.
@@ -94,18 +114,18 @@ func main() {
 
 func loadAppConfig(home string) appConfig {
 	client := strings.ToLower(strings.TrimSpace(getEnv("READ_ONCE_CLIENT", "")))
-	if client != "claude" && client != "codex" && client != "opencode" {
+	if client != clientClaude && client != clientCodex && client != clientOpenCode {
 		client = detectDefaultClient(home)
 	}
 	cacheRoot := filepath.Join(home, ".claude")
 	settingsFile := filepath.Join(cacheRoot, "settings.json")
 	configFile := settingsFile
 	switch client {
-	case "codex":
+	case clientCodex:
 		cacheRoot = filepath.Join(home, ".codex")
 		settingsFile = filepath.Join(cacheRoot, "hooks.json")
 		configFile = filepath.Join(cacheRoot, "config.toml")
-	case "opencode":
+	case clientOpenCode:
 		cacheRoot = filepath.Join(home, ".config", "opencode")
 		settingsFile = filepath.Join(cacheRoot, "opencode.json")
 		configFile = settingsFile
@@ -134,18 +154,18 @@ func detectDefaultClient(home string) string {
 	codexRoot := filepath.Clean(filepath.Join(home, ".codex"))
 	opencodeRoot := filepath.Clean(filepath.Join(home, ".config", "opencode"))
 	if wd, err := os.Getwd(); err == nil && isWithinDir(wd, codexRoot) {
-		return "codex"
+		return clientCodex
 	}
 	if wd, err := os.Getwd(); err == nil && isWithinDir(wd, opencodeRoot) {
-		return "opencode"
+		return clientOpenCode
 	}
 	if exe, err := os.Executable(); err == nil && isWithinDir(exe, codexRoot) {
-		return "codex"
+		return clientCodex
 	}
 	if exe, err := os.Executable(); err == nil && isWithinDir(exe, opencodeRoot) {
-		return "opencode"
+		return clientOpenCode
 	}
-	return "claude"
+	return clientClaude
 }
 
 func failf(format string, args ...any) {

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -60,22 +59,22 @@ func showStats(statsFile string) error {
 
 	for _, e := range entries {
 		switch e.Event {
-		case "hit":
+		case eventHit:
 			hits++
 			tokensSaved += e.TokensSaved
 			if e.Path != "" {
 				hitFiles[filepath.Base(e.Path)]++
 			}
-		case "diff":
+		case eventDiff:
 			diffs++
 			tokensSaved += e.TokensSaved
-		case "miss":
+		case eventMiss:
 			misses++
 			tokensAllowed += e.Tokens
-		case "changed":
+		case eventChanged:
 			changed++
 			tokensAllowed += e.Tokens
-		case "expired":
+		case eventExpired:
 			expired++
 			tokensAllowed += e.Tokens
 		}
@@ -132,11 +131,11 @@ func showStats(statsFile string) error {
 			}
 			return list[i].count > list[j].count
 		})
-		max := 5
-		if len(list) < max {
-			max = len(list)
+		topN := 5
+		if len(list) < topN {
+			topN = len(list)
 		}
-		for i := 0; i < max; i++ {
+		for i := range topN {
 			fmt.Printf("    %dx  %s\n", list[i].count, list[i].name)
 		}
 		fmt.Println()
@@ -229,28 +228,6 @@ func clearFileGlobal(cacheDir, filePath string) error {
 	return nil
 }
 
-func readLastCacheEntries(cacheFile string) (map[string]cacheEntry, error) {
-	f, err := os.Open(cacheFile)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	entries := make(map[string]cacheEntry)
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		var c cacheEntry
-		if json.Unmarshal([]byte(line), &c) == nil {
-			entries[c.Path] = c
-		}
-	}
-	return entries, sc.Err()
-}
-
 func clearSessions(cacheDir, statsFile string) error {
 	matches, err := filepath.Glob(filepath.Join(cacheDir, "session-*.jsonl"))
 	if err != nil {
@@ -272,7 +249,7 @@ func clearSessions(cacheDir, statsFile string) error {
 }
 
 func installHook(clientName, settingsFile, cacheDir, sourceExe, installedCLI, hookCommand string) error {
-	if clientName == "opencode" {
+	if clientName == clientOpenCode {
 		return installOpenCodeHook(cacheDir, sourceExe, installedCLI)
 	}
 	if err := os.MkdirAll(filepath.Dir(settingsFile), 0o755); err != nil {
@@ -293,9 +270,9 @@ func installHook(clientName, settingsFile, cacheDir, sourceExe, installedCLI, ho
 	if err != nil {
 		return fmt.Errorf("settings.json is invalid JSON: %w", err)
 	}
-	matcher := "Read"
-	if clientName == "codex" {
-		matcher = "Bash"
+	matcher := toolRead
+	if clientName == clientCodex {
+		matcher = toolBash
 	}
 	if hasReadOnceHookForTool(settings, matcher) {
 		if !fileExists(installedCLI) {
@@ -381,7 +358,7 @@ func upgradeHook(sourceExe, installedCLI string) error {
 }
 
 func optimizeSetup(clientName, settingsFile, hookCommand string) error {
-	if clientName == "opencode" {
+	if clientName == clientOpenCode {
 		return optimizeOpenCodePlugin(settingsFile, hookCommand)
 	}
 	raw, err := os.ReadFile(settingsFile)
@@ -405,9 +382,9 @@ func optimizeSetup(clientName, settingsFile, hookCommand string) error {
 	}
 
 	optimal := optimalHookCommand(hookCommand)
-	targetMatcher := "Read"
-	if clientName == "codex" {
-		targetMatcher = "Bash"
+	targetMatcher := toolRead
+	if clientName == clientCodex {
+		targetMatcher = toolBash
 	}
 	updated := 0
 	for i, item := range pre {
@@ -470,7 +447,7 @@ func showStatus(clientName, settingsFile, installedCLI, legacyHook, statsFile st
 		fmt.Println("  Hook:          NOT INSTALLED - run: read-once install")
 	}
 
-	if clientName == "opencode" {
+	if clientName == clientOpenCode {
 		pluginFile := filepath.Join(filepath.Dir(settingsFile), "plugins", "read-once.js")
 		if fileExists(pluginFile) {
 			fmt.Printf("  Plugin:        Configured in %s\n", pluginFile)
@@ -496,7 +473,7 @@ func showStatus(clientName, settingsFile, installedCLI, legacyHook, statsFile st
 	if err == nil {
 		var hits int64
 		for _, e := range entries {
-			if e.Event == "hit" {
+			if e.Event == eventHit {
 				hits++
 			}
 		}
@@ -558,13 +535,13 @@ func verify(clientName, settingsFile, configFile, installedCLI, legacyHook, sour
 	}
 
 	raw, err := os.ReadFile(settingsFile)
-	targetMatcher := "Read"
-	if clientName == "codex" || clientName == "opencode" {
-		targetMatcher = "Bash"
+	targetMatcher := toolRead
+	if clientName == clientCodex || clientName == clientOpenCode {
+		targetMatcher = toolBash
 	}
 	if err == nil {
 		v.pass(fmt.Sprintf("%s exists", settingsFile))
-		if clientName == "opencode" {
+		if clientName == clientOpenCode { //nolint:gocritic // if-else chain reads clearer here than switch
 			if _, parseErr := parseJSONMap(raw); parseErr == nil {
 				v.pass("opencode config file is valid JSON")
 			} else {
@@ -619,7 +596,7 @@ func verify(clientName, settingsFile, configFile, installedCLI, legacyHook, sour
 	} else {
 		v.warn(fmt.Sprintf("settings file not found (%s) - install is optional if your runtime wires hooks externally", settingsFile))
 	}
-	if clientName == "codex" && configFile != "" {
+	if clientName == clientCodex && configFile != "" {
 		if cfgRaw, cfgErr := os.ReadFile(configFile); cfgErr == nil {
 			if codexHooksEnabled(string(cfgRaw)) {
 				v.pass(fmt.Sprintf("codex hooks feature enabled in %s", configFile))
@@ -631,9 +608,36 @@ func verify(clientName, settingsFile, configFile, installedCLI, legacyHook, sour
 	fmt.Println()
 
 	fmt.Println("Dry-run test:")
-	testHookCmd := readMatcherReadOnceCommand(parseJSONMapSafe(raw), targetMatcher)
+	parsedSettings, _ := parseJSONMap(raw)
+	if parsedSettings == nil {
+		parsedSettings = map[string]any{}
+	}
+	testHookCmd := readMatcherReadOnceCommand(parsedSettings, targetMatcher)
 	if strings.TrimSpace(testHookCmd) == "" {
-		testHookCmd = readAnyReadOnceCommand(parseJSONMapSafe(raw))
+		// Fallback: find any read-once command across all matchers
+		if hooks, ok := parsedSettings["hooks"].(map[string]any); ok {
+			if pre, ok := hooks["PreToolUse"].([]any); ok {
+				for _, item := range pre {
+					m, ok := item.(map[string]any)
+					if !ok {
+						continue
+					}
+					hs, ok := m["hooks"].([]any)
+					if !ok || len(hs) == 0 {
+						continue
+					}
+					hm, ok := hs[0].(map[string]any)
+					if !ok {
+						continue
+					}
+					cmd, _ := hm["command"].(string)
+					if strings.Contains(cmd, "read-once") {
+						testHookCmd = cmd
+						break
+					}
+				}
+			}
+		}
 	}
 	if strings.TrimSpace(testHookCmd) == "" {
 		if fileExists(installedCLI) {
@@ -652,7 +656,7 @@ func verify(clientName, settingsFile, configFile, installedCLI, legacyHook, sour
 	fmt.Println()
 
 	fmt.Println("Configuration:")
-	mode := getMode(getEnv("READ_ONCE_MODE", "warn"))
+	mode := getMode(getEnv("READ_ONCE_MODE", modeWarn))
 	modeUnchanged := getMode(getEnv("READ_ONCE_MODE_UNCHANGED", mode))
 	modeChanged := getMode(getEnv("READ_ONCE_MODE_CHANGED", mode))
 	ttl := getEnvInt("READ_ONCE_TTL", 300)
@@ -666,7 +670,7 @@ func verify(clientName, settingsFile, configFile, installedCLI, legacyHook, sour
 	exclude := getEnv("READ_ONCE_EXCLUDE", "")
 	disabled := getEnv("READ_ONCE_DISABLED", "0")
 	debugDefault := "0"
-	if clientName == "codex" {
+	if clientName == clientCodex {
 		debugDefault = "1"
 	}
 	debug := getEnv("READ_ONCE_DEBUG", debugDefault)
@@ -680,8 +684,16 @@ func verify(clientName, settingsFile, configFile, installedCLI, legacyHook, sour
 	fmt.Printf("  Hash:     %s (READ_ONCE_HASH)\n", hashMode)
 	fmt.Printf("  Hash alg: %s (READ_ONCE_HASH_ALGO)\n", hashAlgo)
 	fmt.Printf("  Max size: %d bytes (READ_ONCE_MAX_BYTES)\n", maxBytes)
-	fmt.Printf("  Include:  %s (READ_ONCE_INCLUDE)\n", defaultIfEmpty(include, "<none>"))
-	fmt.Printf("  Exclude:  %s (READ_ONCE_EXCLUDE)\n", defaultIfEmpty(exclude, "<none>"))
+	includeDisplay := "<none>"
+	if strings.TrimSpace(include) != "" {
+		includeDisplay = include
+	}
+	excludeDisplay := "<none>"
+	if strings.TrimSpace(exclude) != "" {
+		excludeDisplay = exclude
+	}
+	fmt.Printf("  Include:  %s (READ_ONCE_INCLUDE)\n", includeDisplay)
+	fmt.Printf("  Exclude:  %s (READ_ONCE_EXCLUDE)\n", excludeDisplay)
 	fmt.Printf("  Disabled: %s (READ_ONCE_DISABLED)\n", disabled)
 	fmt.Printf("  Debug:    %s (READ_ONCE_DEBUG)\n", debug)
 	fmt.Println()
@@ -709,15 +721,15 @@ func runDryRun(v *verifyState, hookCommand, clientName string) error {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("verify-%d", time.Now().UnixNano())))
 	sid := "verify-" + hex.EncodeToString(sum[:8])
 	input := map[string]any{
-		"tool_name": "Read",
+		"tool_name": toolRead,
 		"tool_input": map[string]any{
 			"file_path": testFile,
 		},
 		"session_id": sid,
 		"cwd":        tmp,
 	}
-	if clientName == "codex" {
-		input["tool_name"] = "Bash"
+	if clientName == clientCodex {
+		input["tool_name"] = toolBash
 		input["tool_input"] = map[string]any{
 			"command": "cat " + testFile,
 		}
@@ -725,7 +737,7 @@ func runDryRun(v *verifyState, hookCommand, clientName string) error {
 	inputRaw, _ := json.Marshal(input)
 
 	out1, code1 := runConfiguredHook(hookCommand, tmp, inputRaw)
-	if code1 == 0 && strings.TrimSpace(out1) == "" {
+	if code1 == 0 && strings.TrimSpace(out1) == "" { //nolint:gocritic // compound conditions read clearer as if-else
 		v.pass("First read: allowed (no output = pass-through)")
 	} else if code1 == 0 {
 		v.warn("First read: unexpected output (expected empty for first read)")
@@ -734,13 +746,13 @@ func runDryRun(v *verifyState, hookCommand, clientName string) error {
 	}
 
 	out2, code2 := runConfiguredHook(hookCommand, tmp, inputRaw)
-	if code2 == 0 && strings.TrimSpace(out2) != "" {
+	if code2 == 0 && strings.TrimSpace(out2) != "" { //nolint:gocritic // compound conditions read clearer as if-else
 		var data map[string]any
 		if json.Unmarshal([]byte(out2), &data) == nil {
 			v.pass("Second read: produced valid JSON response")
 			mode := "unknown"
 			if hs, ok := data["hookSpecificOutput"].(map[string]any); ok {
-				if p, ok := hs["permissionDecision"].(string); ok && (p == "allow" || p == "deny") {
+				if p, ok := hs["permissionDecision"].(string); ok && (p == modeAllow || p == modeDeny) {
 					mode = p
 				}
 			}
@@ -789,7 +801,7 @@ func runConfiguredHook(command, home string, input []byte) (string, int) {
 }
 
 func uninstall(clientName, settingsFile string) error {
-	if clientName == "opencode" {
+	if clientName == clientOpenCode {
 		pluginFile := filepath.Join(filepath.Dir(settingsFile), "plugins", "read-once.js")
 		if err := os.Remove(pluginFile); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
@@ -867,7 +879,7 @@ func uninstall(clientName, settingsFile string) error {
 		return err
 	}
 	fmt.Println("read-once hook removed from settings.")
-	if clientName == "codex" {
+	if clientName == clientCodex {
 		fmt.Println("If needed, keep features.codex_hooks = true in ~/.codex/config.toml for other hooks.")
 	}
 	return nil

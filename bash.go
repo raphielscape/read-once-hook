@@ -32,63 +32,7 @@ func extractBashReadPath(toolInput map[string]any, cwd string) (string, string) 
 }
 
 func splitPipelineCommand(cmd string) ([]string, bool) {
-	// Split on top-level pipes only; keep quoted sections intact so
-	// commands like `rg "a|b" file | head` still parse correctly.
-	inSingle := false
-	inDouble := false
-	escaped := false
-	var out []string
-	cur := make([]rune, 0, len(cmd))
-	flush := func() {
-		seg := strings.TrimSpace(string(cur))
-		if seg != "" {
-			out = append(out, seg)
-		}
-		cur = cur[:0]
-	}
-	for _, r := range cmd {
-		if escaped {
-			cur = append(cur, r)
-			escaped = false
-			continue
-		}
-		switch r {
-		case '\\':
-			if inSingle {
-				cur = append(cur, r)
-				continue
-			}
-			escaped = true
-			cur = append(cur, r)
-		case '\'':
-			if inDouble {
-				cur = append(cur, r)
-				continue
-			}
-			inSingle = !inSingle
-			cur = append(cur, r)
-		case '"':
-			if inSingle {
-				cur = append(cur, r)
-				continue
-			}
-			inDouble = !inDouble
-			cur = append(cur, r)
-		case '|':
-			if inSingle || inDouble {
-				cur = append(cur, r)
-				continue
-			}
-			flush()
-		default:
-			cur = append(cur, r)
-		}
-	}
-	if escaped || inSingle || inDouble {
-		return nil, false
-	}
-	flush()
-	return out, len(out) > 0
+	return splitBy(cmd, func(r rune) bool { return r == '|' }, true, true)
 }
 
 func extractReadPathFromSegment(segment, cwd string) (string, string) {

@@ -37,7 +37,7 @@ func readEvents(path string) ([]eventEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // read-only file, close error is meaningless
 
 	var out []eventEntry
 	sc := bufio.NewScanner(f)
@@ -71,7 +71,7 @@ func appendJSONLine(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // write error already checked above
 	if _, err := f.Write(append(b, '\n')); err != nil {
 		return err
 	}
@@ -85,15 +85,13 @@ func appendJSONLine(path string, v any) error {
 // file size grows at roughly one line per unique file read. For typical sessions (<500 unique
 // reads) the scan completes in microseconds. Known limitation: very large sessions with
 // thousands of unique reads will degrade linearly.
-func readLastCacheEntry(cacheFile, filePath string) (cacheEntry, bool) {
+// scanJSONL calls fn for each valid JSONL line in cacheFile.
+func scanJSONL(cacheFile string, fn func(cacheEntry)) {
 	f, err := os.Open(cacheFile)
 	if err != nil {
-		return cacheEntry{}, false
+		return
 	}
-	defer f.Close()
-
-	var last cacheEntry
-	found := false
+	defer f.Close() //nolint:errcheck // read-only file, close error is meaningless
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -101,11 +99,40 @@ func readLastCacheEntry(cacheFile, filePath string) (cacheEntry, bool) {
 			continue
 		}
 		var c cacheEntry
-		if json.Unmarshal([]byte(line), &c) == nil && c.Path == filePath {
+		if json.Unmarshal([]byte(line), &c) == nil {
+			fn(c)
+		}
+	}
+}
+
+// readLastCacheEntries returns the most recent cache entry per path.
+func readLastCacheEntries(cacheFile string) (map[string]cacheEntry, error) {
+	if _, err := os.Stat(cacheFile); err != nil {
+		return nil, err
+	}
+	entries := make(map[string]cacheEntry)
+	scanJSONL(cacheFile, func(c cacheEntry) {
+		entries[c.Path] = c
+	})
+	return entries, nil
+}
+
+// readLastCacheEntry performs a full O(n) sequential scan of the session cache file to find
+// the most recent entry for filePath. Each hook invocation is a fresh process, so there is
+// no cheaper persistent alternative without a daemon. In practice this is bounded: the session
+// cache is scoped to a single TTL window (default 20 min) and entries are append-only, so the
+// file size grows at roughly one line per unique file read. For typical sessions (<500 unique
+// reads) the scan completes in microseconds. Known limitation: very large sessions with
+// thousands of unique reads will degrade linearly.
+func readLastCacheEntry(cacheFile, filePath string) (cacheEntry, bool) {
+	var last cacheEntry
+	found := false
+	scanJSONL(cacheFile, func(c cacheEntry) {
+		if c.Path == filePath {
 			last = c
 			found = true
 		}
-	}
+	})
 	return last, found
 }
 
