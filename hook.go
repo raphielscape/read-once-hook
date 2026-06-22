@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func runHookMode(cacheDir string) error {
+func runHookMode(cacheDir, clientName string) error {
 	if getEnv("READ_ONCE_DISABLED", "0") == "1" {
 		return nil
 	}
@@ -46,6 +46,10 @@ func runHookMode(cacheDir string) error {
 		return nil
 	}
 	toolName = strings.TrimSpace(toolName)
+	// Normalize Codex tool names to match our switch cases.
+	if toolName == "shell" {
+		toolName = toolBash
+	}
 	filePath := ""
 	skipReason := ""
 	switch toolName {
@@ -87,7 +91,7 @@ func runHookMode(cacheDir string) error {
 	cacheKey := filePath
 	hasRange := false
 	var readOffset, readLimit int
-	if toolName == "Read" {
+	if toolName == toolRead {
 		if hasKey(toolInput, "offset") {
 			readOffset = asInt(toolInput["offset"])
 			hasRange = true
@@ -105,7 +109,11 @@ func runHookMode(cacheDir string) error {
 		return nil //nolint:nilerr // hook must not crash if cache dir creation fails
 	}
 
-	defaultMode := getMode(getEnv("READ_ONCE_MODE", modeWarn))
+	defaultModeStr := getEnv("READ_ONCE_MODE", "")
+	if defaultModeStr == "" && clientName == clientCodex {
+		defaultModeStr = modeDeny
+	}
+	defaultMode := getMode(defaultModeStr)
 	unchangedMode := getMode(getEnv("READ_ONCE_MODE_UNCHANGED", defaultMode))
 	changedMode := getMode(getEnv("READ_ONCE_MODE_CHANGED", defaultMode))
 	ttl := int64(getEnvInt("READ_ONCE_TTL", 300))
@@ -226,7 +234,7 @@ func runHookMode(cacheDir string) error {
 		if autoAllow > 0 {
 			reason += fmt.Sprintf(" Attempt %d/%d before auto-allow.", attempts, autoAllow)
 		}
-		emitHookDecision(unchangedMode, reason, shouldEmitAllowDecision(cacheDir))
+		emitHookDecision(unchangedMode, reason, clientName)
 		return nil
 	}
 
@@ -348,7 +356,7 @@ func runHookMode(cacheDir string) error {
 		if autoAllow > 0 {
 			reason += fmt.Sprintf(" Attempt %d/%d before auto-allow.", attempts, autoAllow)
 		}
-		emitHookDecision(unchangedMode, reason, shouldEmitAllowDecision(cacheDir))
+		emitHookDecision(unchangedMode, reason, clientName)
 		return nil
 	}
 
@@ -381,7 +389,7 @@ func runHookMode(cacheDir string) error {
 				"read-once: %s changed since last read (previous mtime=%s, current mtime=%s). You already have the previous version in context. Here are only the changes:\n\n%s\n\nApply this diff mentally to your cached version of the file.",
 				filepath.Base(filePath), formatUnixMtime(last.Mtime), currentMtimeDisplay, diffOutput,
 			)
-			emitHookDecision(changedMode, reason, shouldEmitAllowDecision(cacheDir))
+			emitHookDecision(changedMode, reason, clientName)
 			return nil
 		}
 
@@ -411,17 +419,17 @@ func runHookMode(cacheDir string) error {
 				"read-once: %s changed since last read (previous mtime=%s, current mtime=%s). Full diff was too large, so here is a compact summary:\n\n%s",
 				filepath.Base(filePath), formatUnixMtime(last.Mtime), currentMtimeDisplay, summary,
 			)
-			emitHookDecision(changedMode, reason, shouldEmitAllowDecision(cacheDir))
+			emitHookDecision(changedMode, reason, clientName)
 			return nil
 		}
 	}
 
-	if changedMode == modeDeny {
+	if ok && changedMode == modeDeny {
 		reason := fmt.Sprintf(
 			"read-once: %s changed since last read (previous mtime=%s, current mtime=%s); re-read is blocked.",
 			filepath.Base(filePath), formatUnixMtime(last.Mtime), currentMtimeDisplay,
 		)
-		emitHookDecision(changedMode, reason, shouldEmitAllowDecision(cacheDir))
+		emitHookDecision(changedMode, reason, clientName)
 		return nil
 	}
 
@@ -449,24 +457,19 @@ func runHookMode(cacheDir string) error {
 	return nil
 }
 
-func emitHookDecision(mode, reason string, emitAllow bool) {
+func emitHookDecision(mode, reason, client string) {
 	if mode == modeAllow {
 		return
 	}
 	if mode == modeDeny {
-		// Keep PreToolUse output schema minimal and explicit for Codex:
-		// return only hookSpecificOutput fields, no extra top-level keys.
-		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
-			"hookSpecificOutput": map[string]any{
-				"hookEventName":            "PreToolUse",
-				"permissionDecision":       modeDeny,
-				"permissionDecisionReason": reason,
-			},
-		})
-		return
+		// Exit code 2 blocks the tool call and surfaces reason to model.
+		// Works across all clients (Claude, Codex).
+		_, _ = os.Stderr.WriteString(reason)
+		os.Exit(2)
 	}
-	if !emitAllow {
-		return
+	// warn mode: advisory only, tool call proceeds.
+	if client == clientCodex {
+		return // Codex has no advisory channel — silent pass-through.
 	}
 	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
 		"hookSpecificOutput": map[string]any{
@@ -475,16 +478,6 @@ func emitHookDecision(mode, reason string, emitAllow bool) {
 			"permissionDecisionReason": reason,
 		},
 	})
-}
-
-func isCodexClient(cacheDir string) bool {
-	return strings.Contains(filepath.ToSlash(cacheDir), "/.codex/read-once")
-}
-
-func shouldEmitAllowDecision(cacheDir string) bool {
-	// Codex currently rejects PreToolUse permissionDecision:"allow".
-	// Return no hook output for warn-mode in Codex; deny-mode still emits.
-	return !isCodexClient(cacheDir)
 }
 
 func getMode(v string) string {
@@ -521,7 +514,7 @@ func debugSkip(cacheDir, reason, detail string) {
 
 func debugHookEnabled(cacheDir string) bool {
 	defaultVal := "0"
-	if isCodexClient(cacheDir) {
+	if strings.Contains(filepath.ToSlash(cacheDir), "/.codex/read-once") {
 		defaultVal = "1"
 	}
 	v := strings.ToLower(strings.TrimSpace(getEnv("READ_ONCE_DEBUG", defaultVal)))

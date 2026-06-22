@@ -16,6 +16,15 @@ import (
 	"time"
 )
 
+const hookCommandKey = "command"
+
+func clientMatcher(clientName string) string {
+	if clientName == clientCodex || clientName == clientOpenCode {
+		return toolBash
+	}
+	return toolRead
+}
+
 type verifyState struct {
 	Issues int
 	Checks int
@@ -163,30 +172,24 @@ func clearFile(cacheDir, sessionID, filePath string) error {
 		return err
 	}
 
-	clearedCount := 0
 	for key := range entries {
 		// Clear base path and any ranged variants (e.g., path:0:100)
 		if key == filePath || strings.HasPrefix(key, filePath+":") {
-			err := appendJSONLine(cacheFile, cacheEntry{
+			if err := appendJSONLine(cacheFile, cacheEntry{
 				Path:   key,
 				Mtime:  "cleared",
 				Ts:     0,
 				Tokens: 0,
 				Hash:   "",
-			})
-			if err != nil {
+			}); err != nil {
 				if err.Error() == "lock timeout" {
 					return errors.New("failed to acquire cache lock, try again")
 				}
 				return err
 			}
-			clearedCount++
 		}
 	}
 
-	if clearedCount == 0 {
-		return nil
-	}
 	return nil
 }
 
@@ -201,7 +204,6 @@ func clearFileGlobal(cacheDir, filePath string) error {
 		filePath = filepath.Clean(absPath)
 	}
 
-	clearedAny := false
 	for _, cacheFile := range matches {
 		entries, err := readLastCacheEntries(cacheFile)
 		if err != nil {
@@ -209,21 +211,15 @@ func clearFileGlobal(cacheDir, filePath string) error {
 		}
 		for key := range entries {
 			if key == filePath || strings.HasPrefix(key, filePath+":") {
-				err := appendJSONLine(cacheFile, cacheEntry{
+				_ = appendJSONLine(cacheFile, cacheEntry{
 					Path:   key,
 					Mtime:  "cleared",
 					Ts:     0,
 					Tokens: 0,
 					Hash:   "",
 				})
-				if err == nil {
-					clearedAny = true
-				}
 			}
 		}
-	}
-	if !clearedAny {
-		return nil
 	}
 	return nil
 }
@@ -270,10 +266,7 @@ func installHook(clientName, settingsFile, cacheDir, sourceExe, installedCLI, ho
 	if err != nil {
 		return fmt.Errorf("settings.json is invalid JSON: %w", err)
 	}
-	matcher := toolRead
-	if clientName == clientCodex {
-		matcher = toolBash
-	}
+	matcher := clientMatcher(clientName)
 	if hasReadOnceHookForTool(settings, matcher) {
 		if !fileExists(installedCLI) {
 			if err := os.MkdirAll(cacheDir, 0o755); err != nil {
@@ -321,8 +314,8 @@ func installHook(clientName, settingsFile, cacheDir, sourceExe, installedCLI, ho
 		"matcher": matcher,
 		"hooks": []any{
 			map[string]any{
-				"type":    "command",
-				"command": hookCommand,
+				"type":         hookCommandKey,
+				hookCommandKey: hookCommand,
 			},
 		},
 	})
@@ -382,10 +375,7 @@ func optimizeSetup(clientName, settingsFile, hookCommand string) error {
 	}
 
 	optimal := optimalHookCommand(hookCommand)
-	targetMatcher := toolRead
-	if clientName == clientCodex {
-		targetMatcher = toolBash
-	}
+	targetMatcher := clientMatcher(clientName)
 	updated := 0
 	for i, item := range pre {
 		m, ok := item.(map[string]any)
@@ -405,11 +395,11 @@ func optimizeSetup(clientName, settingsFile, hookCommand string) error {
 			if !ok {
 				continue
 			}
-			cmd, _ := hm["command"].(string)
+			cmd, _ := hm[hookCommandKey].(string)
 			if cmd == "" || !strings.Contains(cmd, "read-once") {
 				continue
 			}
-			hm["command"] = optimal
+			hm[hookCommandKey] = optimal
 			hs[j] = hm
 			updated++
 		}
@@ -535,10 +525,7 @@ func verify(clientName, settingsFile, configFile, installedCLI, legacyHook, sour
 	}
 
 	raw, err := os.ReadFile(settingsFile)
-	targetMatcher := toolRead
-	if clientName == clientCodex || clientName == clientOpenCode {
-		targetMatcher = toolBash
-	}
+	targetMatcher := clientMatcher(clientName)
 	if err == nil {
 		v.pass(fmt.Sprintf("%s exists", settingsFile))
 		if clientName == clientOpenCode { //nolint:gocritic // if-else chain reads clearer here than switch
@@ -630,7 +617,7 @@ func verify(clientName, settingsFile, configFile, installedCLI, legacyHook, sour
 					if !ok {
 						continue
 					}
-					cmd, _ := hm["command"].(string)
+					cmd, _ := hm[hookCommandKey].(string)
 					if strings.Contains(cmd, "read-once") {
 						testHookCmd = cmd
 						break
@@ -731,7 +718,7 @@ func runDryRun(v *verifyState, hookCommand, clientName string) error {
 	if clientName == clientCodex {
 		input["tool_name"] = toolBash
 		input["tool_input"] = map[string]any{
-			"command": "cat " + testFile,
+			hookCommandKey: "cat " + testFile,
 		}
 	}
 	inputRaw, _ := json.Marshal(input)
@@ -746,7 +733,10 @@ func runDryRun(v *verifyState, hookCommand, clientName string) error {
 	}
 
 	out2, code2 := runConfiguredHook(hookCommand, tmp, inputRaw)
-	if code2 == 0 && strings.TrimSpace(out2) != "" { //nolint:gocritic // compound conditions read clearer as if-else
+	switch {
+	case code2 == 2:
+		v.pass("Second read: blocked re-read (exit code 2 + reason)")
+	case code2 == 0 && strings.TrimSpace(out2) != "":
 		var data map[string]any
 		if json.Unmarshal([]byte(out2), &data) == nil {
 			v.pass("Second read: produced valid JSON response")
@@ -764,9 +754,9 @@ func runDryRun(v *verifyState, hookCommand, clientName string) error {
 		} else {
 			v.fail("Second read: output is not valid JSON", "Check hook command output formatting")
 		}
-	} else if code2 == 0 {
+	case code2 == 0:
 		v.pass("Second read: no output (pass-through/strict-runtime compatibility)")
-	} else {
+	default:
 		v.fail(fmt.Sprintf("Second read: hook exited with code %d", code2), "Check hook command execution errors")
 	}
 	return nil
@@ -852,7 +842,7 @@ func uninstall(clientName, settingsFile string) error {
 					keptHooks = append(keptHooks, h)
 					continue
 				}
-				cmd, _ := hm["command"].(string)
+				cmd, _ := hm[hookCommandKey].(string)
 				if strings.Contains(cmd, "read-once") {
 					continue
 				}

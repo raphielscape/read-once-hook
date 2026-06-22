@@ -57,7 +57,7 @@ func main() {
 
 	switch cmd {
 	case "hook":
-		if err := runHookMode(cfg.cacheDir); err != nil {
+		if err := runHookMode(cfg.cacheDir, cfg.clientName); err != nil {
 			failf("%v", err)
 		}
 	case "mcp":

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"os/signal"
+	"syscall"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -31,5 +33,7 @@ func runMCP(cacheDir string) error {
 		}, nil, nil
 	})
 
-	return server.Run(context.Background(), &mcp.StdioTransport{})
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return server.Run(ctx, &mcp.StdioTransport{})
 }

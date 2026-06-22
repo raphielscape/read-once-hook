@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -128,7 +129,7 @@ func readLastCacheEntry(cacheFile, filePath string) (cacheEntry, bool) {
 	var last cacheEntry
 	found := false
 	scanJSONL(cacheFile, func(c cacheEntry) {
-		if c.Path == filePath {
+		if c.Path == filePath && c.Ts > 0 && c.Mtime != "" {
 			last = c
 			found = true
 		}
@@ -150,7 +151,19 @@ func acquireFileLock(lockPath string, timeout time.Duration) func() {
 			_ = f.Close()
 			return func() { _ = os.Remove(lockPath) }
 		}
-		if !errors.Is(err, os.ErrExist) || time.Now().After(deadline) {
+		if !errors.Is(err, os.ErrExist) {
+			return nil
+		}
+		// Lock file exists — check if the holder is still alive.
+		if b, readErr := os.ReadFile(lockPath); readErr == nil {
+			if pid, parseErr := strconv.Atoi(strings.TrimSpace(string(b))); parseErr == nil && pid > 0 {
+				if killErr := syscall.Kill(pid, 0); errors.Is(killErr, os.ErrProcessDone) || errors.Is(killErr, syscall.ESRCH) {
+					_ = os.Remove(lockPath)
+					continue
+				}
+			}
+		}
+		if time.Now().After(deadline) {
 			return nil
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -169,12 +182,8 @@ func runCleanup(cacheDir, snapDir string, now int64) {
 	}
 	removeOlderThan(cacheDir, "session-*.jsonl", 24*time.Hour)
 	removeOlderThan(snapDir, "*", 24*time.Hour)
-	// NOTE: stale *.lock files are NOT cleaned here. runCleanup is called from within a live
-	// hook invocation that may itself be holding locks. An mtime-based age check cannot safely
-	// distinguish a stale lock (from a SIGKILL'd process) from a slow-but-alive holder, so
-	// auto-removal here risks corrupting JSONL under concurrent writes. Stale locks are
-	// instead cleaned by clearSessions (user-invoked 'read-once clear'), which has no
-	// concurrency risk.
+	// NOTE: stale *.lock files are handled by acquireFileLock via PID liveness
+	// check (kill(pid, 0)). No need to clean them here.
 	_ = os.WriteFile(marker, []byte(strconv.FormatInt(now, 10)+"\n"), 0o644)
 }
 

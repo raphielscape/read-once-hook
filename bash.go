@@ -11,9 +11,6 @@ func extractBashReadPath(toolInput map[string]any, cwd string) (string, string) 
 	if cmd == "" {
 		return "", "empty_command"
 	}
-	if strings.ContainsAny(cmd, "&;<>`$()") || strings.Contains(cmd, "||") {
-		return "", "unsafe_shell_construct"
-	}
 	segments, ok := splitPipelineCommand(cmd)
 	if !ok || len(segments) == 0 {
 		return "", "pipeline_parse_failed"
@@ -32,7 +29,7 @@ func extractBashReadPath(toolInput map[string]any, cwd string) (string, string) 
 }
 
 func splitPipelineCommand(cmd string) ([]string, bool) {
-	return splitBy(cmd, func(r rune) bool { return r == '|' }, true, true)
+	return splitBy(cmd, func(r rune) bool { return r == '|' }, true, true, true)
 }
 
 func extractReadPathFromSegment(segment, cwd string) (string, string) {
@@ -41,47 +38,75 @@ func extractReadPathFromSegment(segment, cwd string) (string, string) {
 		return "", "too_few_tokens"
 	}
 	verb := filepath.Base(tokens[0])
-	readers := map[string]bool{
-		"cat":  true,
-		"sed":  true,
-		"head": true,
-		"tail": true,
-		"less": true,
-		"more": true,
-		"bat":  true,
-		"nl":   true,
-		"grep": true,
-		"rg":   true,
-		"awk":  true,
-		"git":  true,
+	if verb == "git" {
+		return extractGitFileArg(tokens, cwd)
 	}
 	if !readers[verb] {
 		return "", "unsupported_reader:" + verb
 	}
+	candidates := collectArgs(tokens[1:])
+	return resolveBestCandidate(candidates, cwd)
+}
 
-	candidates := make([]string, 0, len(tokens))
-	if verb == "git" {
-		if len(tokens) < 3 || tokens[1] != "show" {
-			return "", "unsupported_git_subcommand"
-		}
-		for _, tok := range tokens[2:] {
-			if strings.HasPrefix(tok, "-") {
-				continue
-			}
-			candidates = append(candidates, tok)
-			// Handle `git show REV:path/to/file` by also trying the suffix path.
-			if i := strings.Index(tok, ":"); i > 0 && i < len(tok)-1 {
-				candidates = append(candidates, tok[i+1:])
-			}
-		}
-	} else {
-		for _, tok := range tokens[1:] {
-			if strings.HasPrefix(tok, "-") {
-				continue
-			}
-			candidates = append(candidates, tok)
+var readers = map[string]bool{
+	"cat": true, "sed": true, "head": true, "tail": true,
+	"less": true, "more": true, "bat": true, "nl": true,
+	"grep": true, "rg": true, "awk": true,
+	"wc": true, "diff": true, "sort": true, "cut": true,
+	"tee": true, "file": true, "stat": true,
+	"md5sum": true, "sha1sum": true, "sha256sum": true,
+	"base64": true, "xxd": true, "strings": true,
+	"column": true, "ls": true,
+}
+
+func extractGitFileArg(tokens []string, cwd string) (string, string) {
+	if len(tokens) < 3 {
+		return "", "too_few_tokens"
+	}
+	subcmd := tokens[1]
+	if !gitFileSubs[subcmd] {
+		return "", "unsupported_git_subcommand:" + subcmd
+	}
+	candidates := collectArgs(tokens[2:])
+	for _, tok := range candidates {
+		if i := strings.Index(tok, ":"); i > 0 && i < len(tok)-1 {
+			candidates = append(candidates, tok[i+1:])
 		}
 	}
+	return resolveBestCandidate(candidates, cwd)
+}
+
+var gitFileSubs = map[string]bool{
+	"show": true, "diff": true, "log": true, "blame": true,
+	"cat-file": true, "ls-tree": true, "grep": true,
+}
+
+// collectArgs collects non-flag tokens from args, skipping output redirect targets.
+func collectArgs(args []string) []string {
+	var out []string
+	skipNext := false
+	for _, tok := range args {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		switch {
+		case tok == ">" || tok == ">>" || tok == "|>":
+			skipNext = true // skip output redirect target
+		case strings.HasPrefix(tok, ">"):
+			// inline output redirect like >file — skip
+		case tok == "<":
+			// input redirect — next token is the file, don't skip it
+		case strings.HasPrefix(tok, "-"):
+			// flag — skip
+		default:
+			out = append(out, tok)
+		}
+	}
+	return out
+}
+
+func resolveBestCandidate(candidates []string, cwd string) (string, string) {
 	for i := len(candidates) - 1; i >= 0; i-- {
 		if p, ok := resolveFileToken(candidates[i], cwd); ok {
 			return p, ""

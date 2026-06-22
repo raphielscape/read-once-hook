@@ -42,7 +42,7 @@ func parseJSONMap(raw []byte) (map[string]any, error) {
 // If trimSegments is true, each segment is trimmed and empties are dropped.
 // If preserveEscapes is true, backslashes are kept in output (for pipe splitting where
 // \| should produce a literal pipe, not a split point).
-func splitBy(s string, isSep func(rune) bool, trimSegments, preserveEscapes bool) ([]string, bool) {
+func splitBy(s string, isSep func(rune) bool, trimSegments, preserveEscapes, preserveQuotes bool) ([]string, bool) {
 	inSingle := false
 	inDouble := false
 	escaped := false
@@ -79,11 +79,17 @@ func splitBy(s string, isSep func(rune) bool, trimSegments, preserveEscapes bool
 				cur = append(cur, r)
 				continue
 			}
+			if preserveQuotes {
+				cur = append(cur, r)
+			}
 			inSingle = !inSingle
 		case '"':
 			if inSingle {
 				cur = append(cur, r)
 				continue
+			}
+			if preserveQuotes {
+				cur = append(cur, r)
 			}
 			inDouble = !inDouble
 		default:
@@ -106,7 +112,7 @@ func isWhitespace(r rune) bool {
 }
 
 func shellSplit(s string) ([]string, bool) {
-	return splitBy(s, isWhitespace, false, false)
+	return splitBy(s, isWhitespace, false, false, false)
 }
 
 func splitCommand(s string) []string {
