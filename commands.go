@@ -51,7 +51,7 @@ func (v *verifyState) warn(msg string) {
 	fmt.Printf("  [warn] %s\n", msg)
 }
 
-func showStats(statsFile string) error {
+func showStats(statsFile, sessionFilter string) error {
 	entries, err := readEvents(statsFile)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -59,6 +59,10 @@ func showStats(statsFile string) error {
 			return nil
 		}
 		return err
+	}
+
+	if sessionFilter != "" {
+		return showSessionStats(entries, sessionFilter)
 	}
 
 	var hits, diffs, misses, changed, expired int64
@@ -151,6 +155,128 @@ func showStats(statsFile string) error {
 	}
 	fmt.Printf("  Sessions tracked:    %d\n", len(sessions))
 	fmt.Printf("  Cache TTL:           %d minutes (READ_ONCE_TTL=%ds)\n", ttlMin, ttl)
+	return nil
+}
+
+func showSessionStats(entries []eventEntry, sessionFilter string) error {
+	// Find matching sessions (prefix match)
+	var matches []string
+	sessionSet := map[string]struct{}{}
+	for _, e := range entries {
+		if e.Session != "" {
+			sessionSet[e.Session] = struct{}{}
+		}
+	}
+	for s := range sessionSet {
+		if strings.HasPrefix(s, sessionFilter) || strings.Contains(s, sessionFilter) {
+			matches = append(matches, s)
+		}
+	}
+	if len(matches) == 0 {
+		return fmt.Errorf("no session matching '%s'", sessionFilter)
+	}
+	if len(matches) > 1 {
+		fmt.Printf("Multiple sessions match '%s':\n", sessionFilter)
+		for _, s := range matches {
+			fmt.Printf("  %s\n", s)
+		}
+		return nil
+	}
+
+	sessionID := matches[0]
+	var hits, diffs, misses, changed, expired int64
+	var tokensSaved, tokensAllowed int64
+	hitFiles := map[string]int64{}
+	var firstTs, lastTs int64
+
+	for _, e := range entries {
+		if e.Session != sessionID {
+			continue
+		}
+		if firstTs == 0 || e.Ts < firstTs {
+			firstTs = e.Ts
+		}
+		if e.Ts > lastTs {
+			lastTs = e.Ts
+		}
+		switch e.Event {
+		case eventHit:
+			hits++
+			tokensSaved += e.TokensSaved
+			if e.Path != "" {
+				hitFiles[filepath.Base(e.Path)]++
+			}
+		case eventDiff:
+			diffs++
+			tokensSaved += e.TokensSaved
+		case eventMiss:
+			misses++
+			tokensAllowed += e.Tokens
+		case eventChanged:
+			changed++
+			tokensAllowed += e.Tokens
+		case eventExpired:
+			expired++
+			tokensAllowed += e.Tokens
+		}
+	}
+
+	totalReads := hits + diffs + misses + changed + expired
+	if totalReads == 0 {
+		return fmt.Errorf("session %s has no reads", sessionID)
+	}
+
+	tokensTotal := tokensAllowed + tokensSaved
+	savingsPct := int64(0)
+	if tokensTotal > 0 {
+		savingsPct = (tokensSaved * 100) / tokensTotal
+	}
+
+	fmt.Printf("read-once - session %s\n\n", sessionID)
+	if firstTs > 0 && lastTs > firstTs {
+		durMin := (lastTs - firstTs) / 60
+		fmt.Printf("  Duration:            %d min\n", durMin)
+	}
+	fmt.Printf("  Total file reads:    %d\n", totalReads)
+	fmt.Printf("  Cache hits:          %d (blocked re-reads)\n", hits)
+	if diffs > 0 {
+		fmt.Printf("  Diff hits:           %d (changed files - sent diff only)\n", diffs)
+	}
+	fmt.Printf("  First reads:         %d\n", misses)
+	fmt.Printf("  Changed files:       %d\n", changed)
+	fmt.Printf("  TTL expired:         %d\n", expired)
+	fmt.Println()
+	fmt.Printf("  Tokens saved:        ~%d\n", tokensSaved)
+	fmt.Printf("  Read token total:    ~%d\n", tokensTotal)
+	fmt.Printf("  Savings:             %d%%\n", savingsPct)
+	if tokensSaved > 0 {
+		fmt.Printf("  Est. cost saved:     $%.4f (Sonnet) / $%.4f (Opus)\n", float64(tokensSaved)*3/1_000_000, float64(tokensSaved)*15/1_000_000)
+	}
+	fmt.Println()
+	if hits > 0 && len(hitFiles) > 0 {
+		fmt.Println("  Top re-read files:")
+		type kv struct {
+			name  string
+			count int64
+		}
+		var list []kv
+		for k, v := range hitFiles {
+			list = append(list, kv{name: k, count: v})
+		}
+		sort.Slice(list, func(i, j int) bool {
+			if list[i].count == list[j].count {
+				return list[i].name < list[j].name
+			}
+			return list[i].count > list[j].count
+		})
+		topN := 10
+		if len(list) < topN {
+			topN = len(list)
+		}
+		for i := range topN {
+			fmt.Printf("    %dx  %s\n", list[i].count, list[i].name)
+		}
+	}
 	return nil
 }
 

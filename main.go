@@ -65,7 +65,14 @@ func main() {
 			failf("%v", err)
 		}
 	case "stats", "gain":
-		if err := showStats(cfg.statsFile); err != nil {
+		sessionFilter := ""
+		for i := 2; i < len(os.Args); i++ {
+			if os.Args[i] == "--session" && i+1 < len(os.Args) {
+				sessionFilter = os.Args[i+1]
+				i++
+			}
+		}
+		if err := showStats(cfg.statsFile, sessionFilter); err != nil {
 			failf("%v", err)
 		}
 	case "clear":

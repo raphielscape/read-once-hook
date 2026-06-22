@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -381,4 +382,29 @@ func fileContentHash(path, algo string) string {
 		return ""
 	}
 	return hex.EncodeToString(sumFn(nil))
+}
+
+// computeAdaptiveTTL returns a TTL that grows with session duration.
+// Starts at baseTTL, scales up to 3x over 20 minutes of session life.
+// ponytail: simple linear ramp, no ML needed.
+func computeAdaptiveTTL(baseTTL int64, cacheFile string, now int64) int64 {
+	// Find the earliest cache entry to estimate session start.
+	var earliest = now
+	scanJSONL(cacheFile, func(c cacheEntry) {
+		if c.Ts > 0 && c.Ts < earliest {
+			earliest = c.Ts
+		}
+	})
+	sessionAge := now - earliest
+	if sessionAge <= 0 {
+		return baseTTL
+	}
+	// Linear ramp: 0min→1x, 10min→2x, 20min→3x, capped at 3x.
+	multiplier := 1.0 + math.Min(float64(sessionAge)/600.0, 2.0)
+	adaptive := int64(float64(baseTTL) * multiplier)
+	maxTTL := baseTTL * 3
+	if adaptive > maxTTL {
+		adaptive = maxTTL
+	}
+	return adaptive
 }

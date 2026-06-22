@@ -120,7 +120,7 @@ func runHookMode(cacheDir, clientName string) error {
 	diffMode := getEnv("READ_ONCE_DIFF", "0") == "1"
 	diffMax := getEnvInt("READ_ONCE_DIFF_MAX", 40)
 	diffSummaryMaxHunks := getEnvInt("READ_ONCE_DIFF_SUMMARY_MAX_HUNKS", 12)
-	hashMode := getEnv("READ_ONCE_HASH", "0") == "1"
+	hashMode := getEnv("READ_ONCE_HASH", "1") == "1"
 	hashAlgo := strings.ToLower(getEnv("READ_ONCE_HASH_ALGO", "xxhash"))
 	maxBytes := int64(getEnvInt("READ_ONCE_MAX_BYTES", 1024*1024))
 	decay := int64(getEnvInt("READ_ONCE_DECAY", 60))
@@ -138,7 +138,7 @@ func runHookMode(cacheDir, clientName string) error {
 
 	snapDir := filepath.Join(cacheDir, "snapshots")
 	if diffMode && hasRange {
-		diffMode = false // Don't do unified diffs for ranged reads against the full file
+		diffMode = false
 	}
 	if diffMode {
 		_ = os.MkdirAll(snapDir, 0o755)
@@ -149,6 +149,9 @@ func runHookMode(cacheDir, clientName string) error {
 	sessionHash := shortHash(sessionID)
 	cacheFile := filepath.Join(cacheDir, "session-"+sessionHash+".jsonl")
 	statsFile := filepath.Join(cacheDir, "stats.jsonl")
+
+	adaptiveTTL := computeAdaptiveTTL(ttl, cacheFile, now)
+
 	pathHash := shortHash(cacheKey)
 	snapFile := filepath.Join(snapDir, sessionHash+"-"+pathHash)
 
@@ -158,11 +161,12 @@ func runHookMode(cacheDir, clientName string) error {
 	last, ok := readLastCacheEntry(cacheFile, cacheKey)
 	if ok && !hashMode {
 		currentMtime := last.Mtime
+		effectiveTTL := adaptiveTTL
 		entryAge := now - last.Ts
 		if last.Ts <= 0 {
 			entryAge = 0
 		}
-		if entryAge >= ttl {
+		if entryAge >= effectiveTTL {
 			_ = appendJSONLine(cacheFile, cacheEntry{
 				Path:   cacheKey,
 				Mtime:  currentMtime,
@@ -211,7 +215,7 @@ func runHookMode(cacheDir, clientName string) error {
 		_ = appendJSONLine(cacheFile, cacheEntry{
 			Path:          cacheKey,
 			Mtime:         currentMtime,
-			Ts:            last.Ts,
+			Ts:            now, // ponytail: sliding TTL — reset clock on access
 			Tokens:        0,
 			Hash:          "",
 			LastAttemptTs: now,
@@ -226,7 +230,7 @@ func runHookMode(cacheDir, clientName string) error {
 		})
 
 		minutesAgo := entryAge / 60
-		ttlMin := ttl / 60
+		ttlMin := effectiveTTL / 60
 		reason := fmt.Sprintf(
 			"read-once: %s is already in context (read %dm ago, unchanged; mtime=%s). Re-read allowed after %dm.",
 			filepath.Base(filePath), minutesAgo, formatUnixMtime(currentMtime), ttlMin,
@@ -278,11 +282,12 @@ func runHookMode(cacheDir, clientName string) error {
 		unchanged = false
 	}
 	if unchanged {
+		effectiveTTL := adaptiveTTL
 		entryAge := now - last.Ts
 		if last.Ts <= 0 {
 			entryAge = 0
 		}
-		if entryAge >= ttl {
+		if entryAge >= effectiveTTL {
 			_ = appendJSONLine(cacheFile, cacheEntry{
 				Path:   cacheKey,
 				Mtime:  currentMtime,
@@ -332,7 +337,7 @@ func runHookMode(cacheDir, clientName string) error {
 		_ = appendJSONLine(cacheFile, cacheEntry{
 			Path:          cacheKey,
 			Mtime:         currentMtime,
-			Ts:            last.Ts,
+			Ts:            now, // ponytail: sliding TTL — reset clock on access
 			Tokens:        estimatedTokens,
 			Hash:          currentHash,
 			LastAttemptTs: now,
@@ -348,7 +353,7 @@ func runHookMode(cacheDir, clientName string) error {
 		})
 
 		minutesAgo := entryAge / 60
-		ttlMin := ttl / 60
+		ttlMin := effectiveTTL / 60
 		reason := fmt.Sprintf(
 			"read-once: %s is already in context (read %dm ago, unchanged; mtime=%s). Re-read allowed after %dm.",
 			filepath.Base(filePath), minutesAgo, currentMtimeDisplay, ttlMin,
