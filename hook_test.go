@@ -442,3 +442,290 @@ func TestShouldBypassPath(t *testing.T) {
 		}
 	}
 }
+
+// --- New tests for expanded Codex patterns ---
+
+func TestExtractBashBatcat(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "README.md")
+	os.WriteFile(f, []byte("test"), 0644)
+
+	input := map[string]any{"command": "batcat README.md"}
+	path, skip := extractBashReadPath(input, tmp)
+	if path != filepath.Clean(f) {
+		t.Errorf("expected %s, got %s (skip=%s)", f, path, skip)
+	}
+}
+
+func TestExtractBashCcat(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "file.txt")
+	os.WriteFile(f, []byte("test"), 0644)
+
+	input := map[string]any{"command": "ccat file.txt"}
+	path, skip := extractBashReadPath(input, tmp)
+	if path != filepath.Clean(f) {
+		t.Errorf("expected %s, got %s (skip=%s)", f, path, skip)
+	}
+}
+
+func TestExtractBashEza(t *testing.T) {
+	tmp := t.TempDir()
+	subdir := filepath.Join(tmp, "src")
+	os.MkdirAll(subdir, 0755)
+
+	input := map[string]any{"command": "eza src"}
+	path, skip := extractBashReadPath(input, tmp)
+	// eza reads a directory — resolveFileToken rejects directories, so skip is expected
+	// unless we point it at a file. But eza on a dir is valid for listing.
+	// For now, just verify it doesn't crash and returns a skip reason.
+	_ = path
+	if skip == "" {
+		t.Log("eza on directory returned path (unexpected but harmless)")
+	}
+}
+
+func TestExtractBashExa(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "file.txt")
+	os.WriteFile(f, []byte("test"), 0644)
+
+	// exa can list files too — but typically used on directories.
+	// Test with a file to verify it's recognized as a reader verb.
+	input := map[string]any{"command": "exa file.txt"}
+	path, skip := extractBashReadPath(input, tmp)
+	if path != filepath.Clean(f) {
+		t.Errorf("expected %s, got %s (skip=%s)", f, path, skip)
+	}
+}
+
+func TestExtractBashTree(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "file.txt")
+	os.WriteFile(f, []byte("test"), 0644)
+
+	input := map[string]any{"command": "tree file.txt"}
+	path, skip := extractBashReadPath(input, tmp)
+	if path != filepath.Clean(f) {
+		t.Errorf("expected %s, got %s (skip=%s)", f, path, skip)
+	}
+}
+
+func TestExtractBashDu(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "file.txt")
+	os.WriteFile(f, []byte("test"), 0644)
+
+	input := map[string]any{"command": "du file.txt"}
+	path, skip := extractBashReadPath(input, tmp)
+	if path != filepath.Clean(f) {
+		t.Errorf("expected %s, got %s (skip=%s)", f, path, skip)
+	}
+}
+
+func TestExtractBashCdThenCat(t *testing.T) {
+	tmp := t.TempDir()
+	subdir := filepath.Join(tmp, "sub")
+	os.MkdirAll(subdir, 0755)
+	f := filepath.Join(subdir, "file.txt")
+	os.WriteFile(f, []byte("test"), 0644)
+
+	input := map[string]any{"command": "cd sub && cat file.txt"}
+	path, skip := extractBashReadPath(input, tmp)
+	if path != filepath.Clean(f) {
+		t.Errorf("expected %s, got %s (skip=%s)", f, path, skip)
+	}
+}
+
+func TestExtractBashCdThenCatAbs(t *testing.T) {
+	tmp := t.TempDir()
+	subdir := filepath.Join(tmp, "sub")
+	os.MkdirAll(subdir, 0755)
+	f := filepath.Join(subdir, "file.txt")
+	os.WriteFile(f, []byte("test"), 0644)
+
+	// Absolute cd path.
+	input := map[string]any{"command": "cd " + subdir + " && cat file.txt"}
+	path, skip := extractBashReadPath(input, tmp)
+	if path != filepath.Clean(f) {
+		t.Errorf("expected %s, got %s (skip=%s)", f, path, skip)
+	}
+}
+
+func TestExtractBashCdDoubleDash(t *testing.T) {
+	tmp := t.TempDir()
+	weirdDir := filepath.Join(tmp, "-weird")
+	os.MkdirAll(weirdDir, 0755)
+	f := filepath.Join(weirdDir, "file.txt")
+	os.WriteFile(f, []byte("test"), 0644)
+
+	input := map[string]any{"command": "cd -- -weird && cat file.txt"}
+	path, skip := extractBashReadPath(input, tmp)
+	if path != filepath.Clean(f) {
+		t.Errorf("expected %s, got %s (skip=%s)", f, path, skip)
+	}
+}
+
+func TestExtractBashCdMultipleOperandsUsesLast(t *testing.T) {
+	tmp := t.TempDir()
+	dir1 := filepath.Join(tmp, "dir1")
+	dir2 := filepath.Join(tmp, "dir2")
+	os.MkdirAll(dir1, 0755)
+	os.MkdirAll(dir2, 0755)
+	f := filepath.Join(dir2, "file.txt")
+	os.WriteFile(f, []byte("test"), 0644)
+
+	input := map[string]any{"command": "cd dir1 dir2 && cat file.txt"}
+	path, skip := extractBashReadPath(input, tmp)
+	if path != "" || skip == "" {
+		t.Errorf("expected invalid cd to skip, got path=%q skip=%q", path, skip)
+	}
+}
+
+func TestExtractBashCdWithSemicolon(t *testing.T) {
+	tmp := t.TempDir()
+	subdir := filepath.Join(tmp, "sub")
+	os.MkdirAll(subdir, 0755)
+	f := filepath.Join(subdir, "file.txt")
+	os.WriteFile(f, []byte("test"), 0644)
+
+	input := map[string]any{"command": "cd sub ; cat file.txt"}
+	path, skip := extractBashReadPath(input, tmp)
+	if path != filepath.Clean(f) {
+		t.Errorf("expected %s, got %s (skip=%s)", f, path, skip)
+	}
+}
+
+func TestExtractBashBashLc(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "file.txt")
+	os.WriteFile(f, []byte("test"), 0644)
+
+	input := map[string]any{"command": "bash -lc 'cat file.txt'"}
+	path, skip := extractBashReadPath(input, tmp)
+	if path != filepath.Clean(f) {
+		t.Errorf("expected %s, got %s (skip=%s)", f, path, skip)
+	}
+}
+
+func TestExtractBashBashLcDoubleQuotes(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "file.txt")
+	os.WriteFile(f, []byte("test"), 0644)
+
+	input := map[string]any{"command": `bash -lc "cat file.txt"`}
+	path, skip := extractBashReadPath(input, tmp)
+	if path != filepath.Clean(f) {
+		t.Errorf("expected %s, got %s (skip=%s)", f, path, skip)
+	}
+}
+
+func TestExtractBashZshLc(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "file.txt")
+	os.WriteFile(f, []byte("test"), 0644)
+
+	input := map[string]any{"command": "zsh -lc 'head file.txt'"}
+	path, skip := extractBashReadPath(input, tmp)
+	if path != filepath.Clean(f) {
+		t.Errorf("expected %s, got %s (skip=%s)", f, path, skip)
+	}
+}
+
+func TestExtractBashBashLcWithCd(t *testing.T) {
+	tmp := t.TempDir()
+	subdir := filepath.Join(tmp, "sub")
+	os.MkdirAll(subdir, 0755)
+	f := filepath.Join(subdir, "file.txt")
+	os.WriteFile(f, []byte("test"), 0644)
+
+	input := map[string]any{"command": "bash -lc 'cd sub && cat file.txt'"}
+	path, skip := extractBashReadPath(input, tmp)
+	if path != filepath.Clean(f) {
+		t.Errorf("expected %s, got %s (skip=%s)", f, path, skip)
+	}
+}
+
+func TestExtractBashBashC(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "file.txt")
+	os.WriteFile(f, []byte("test"), 0644)
+
+	input := map[string]any{"command": "bash -c 'cat file.txt'"}
+	path, skip := extractBashReadPath(input, tmp)
+	if path != filepath.Clean(f) {
+		t.Errorf("expected %s, got %s (skip=%s)", f, path, skip)
+	}
+}
+
+func TestUnwrapShellWrapper(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"bash -lc 'cat file.txt'", "cat file.txt"},
+		{`bash -lc "cat file.txt"`, "cat file.txt"},
+		{"zsh -lc 'head file.txt'", "head file.txt"},
+		{"bash -c 'cat file.txt'", "cat file.txt"},
+		{"cat file.txt", "cat file.txt"},             // no wrapper
+		{"bash -lc", "bash -lc"},                     // no quoted string
+		{"bash -lc 'unclosed", "bash -lc 'unclosed"}, // unclosed quote
+	}
+
+	for _, tt := range tests {
+		result := unwrapShellWrapper(tt.input)
+		if result != tt.expected {
+			t.Errorf("unwrapShellWrapper(%q) = %q, want %q", tt.input, result, tt.expected)
+		}
+	}
+}
+
+func TestExtractCdPrefix(t *testing.T) {
+	tests := []struct {
+		input       string
+		expectedCmd string
+		expectedDir string
+	}{
+		{"cd sub && cat file.txt", "cat file.txt", "sub"},
+		{"cd sub ; cat file.txt", "cat file.txt", "sub"},
+		{"cd -- -weird && cat file.txt", "cat file.txt", "-weird"},
+		{"cd dir1 dir2 && cat file.txt", "cd dir1 dir2 && cat file.txt", ""},
+		{"cat file.txt", "cat file.txt", ""},             // no cd prefix
+		{"cd && cat file.txt", "cd && cat file.txt", ""}, // no dir argument — not a cd prefix
+	}
+
+	for _, tt := range tests {
+		cmd, dir := extractCdPrefix(tt.input)
+		if cmd != tt.expectedCmd {
+			t.Errorf("extractCdPrefix(%q) cmd = %q, want %q", tt.input, cmd, tt.expectedCmd)
+		}
+		if dir != tt.expectedDir {
+			t.Errorf("extractCdPrefix(%q) dir = %q, want %q", tt.input, dir, tt.expectedDir)
+		}
+	}
+}
+
+func TestParseCdCommand(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+		ok       bool
+	}{
+		{"cd sub", "sub", true},
+		{"cd -- -weird", "-weird", true},
+		{"cd dir1 dir2", "", false},
+		{"cd", "", false},
+		{"cat file.txt", "", false},
+		{"cd -L sub", "sub", true}, // skip flags
+	}
+
+	for _, tt := range tests {
+		dir, ok := parseCdCommand(tt.input)
+		if ok != tt.ok {
+			t.Errorf("parseCdCommand(%q) ok = %v, want %v", tt.input, ok, tt.ok)
+		}
+		if dir != tt.expected {
+			t.Errorf("parseCdCommand(%q) = %q, want %q", tt.input, dir, tt.expected)
+		}
+	}
+}

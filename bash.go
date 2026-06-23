@@ -11,6 +11,21 @@ func extractBashReadPath(toolInput map[string]any, cwd string) (string, string) 
 	if cmd == "" {
 		return "", "empty_command"
 	}
+	// Unwrap shell wrappers like bash -lc 'cmd' or zsh -lc 'cmd'.
+	cmd = unwrapShellWrapper(cmd)
+	// Handle cd dir && cmd chaining — resolve cwd override.
+	cmd, cdCwd := extractCdPrefix(cmd)
+	if cdCwd != "" {
+		switch {
+		case filepath.IsAbs(cdCwd):
+			cwd = cdCwd
+		case strings.TrimSpace(cwd) != "":
+			cwd = filepath.Join(cwd, cdCwd)
+		default:
+			base, _ := os.Getwd()
+			cwd = filepath.Join(base, cdCwd)
+		}
+	}
 	segments, ok := splitPipelineCommand(cmd)
 	if !ok || len(segments) == 0 {
 		return "", "pipeline_parse_failed"
@@ -50,13 +65,15 @@ func extractReadPathFromSegment(segment, cwd string) (string, string) {
 
 var readers = map[string]bool{
 	"cat": true, "sed": true, "head": true, "tail": true,
-	"less": true, "more": true, "bat": true, "nl": true,
+	"less": true, "more": true, "bat": true, "batcat": true,
+	"ccat": true, "nl": true,
 	"grep": true, "rg": true, "awk": true,
 	"wc": true, "diff": true, "sort": true, "cut": true,
 	"tee": true, "file": true, "stat": true,
 	"md5sum": true, "sha1sum": true, "sha256sum": true,
 	"base64": true, "xxd": true, "strings": true,
 	"column": true, "ls": true,
+	"eza": true, "exa": true, "tree": true, "du": true,
 }
 
 func extractGitFileArg(tokens []string, cwd string) (string, string) {
@@ -133,4 +150,78 @@ func resolveFileToken(token, cwd string) (string, bool) {
 		return "", false
 	}
 	return pathToken, true
+}
+
+// unwrapShellWrapper strips bash -lc '...' or zsh -lc '...' wrappers,
+// returning the inner command. If the input is not a recognized wrapper,
+// it is returned unchanged.
+func unwrapShellWrapper(cmd string) string {
+	tokens, ok := shellSplit(cmd)
+	if !ok {
+		return cmd
+	}
+	if len(tokens) < 3 {
+		return cmd
+	}
+	if tokens[0] != "bash" && tokens[0] != "zsh" {
+		return cmd
+	}
+	for i, tok := range tokens[1:] {
+		if tok == "-c" || tok == "-lc" {
+			if i+2 < len(tokens) {
+				return tokens[i+2]
+			}
+			return cmd
+		}
+	}
+	return cmd
+}
+
+// extractCdPrefix handles "cd dir && cmd" or "cd dir ; cmd" patterns.
+// Returns the remaining command after stripping the cd prefix, and the resolved
+// cwd from the cd target. If no cd prefix is found, returns the original cmd and "".
+func extractCdPrefix(cmd string) (string, string) {
+	// Split by " && " or " ; " to find cd prefix.
+	for _, sep := range []string{" && ", " ; "} {
+		if i := strings.Index(cmd, sep); i > 0 {
+			left := strings.TrimSpace(cmd[:i])
+			right := strings.TrimSpace(cmd[i+len(sep):])
+			// Check if left side is "cd dir" or "cd dir1 dir2".
+			if dir, ok := parseCdCommand(left); ok {
+				return right, dir
+			}
+		}
+	}
+	return cmd, ""
+}
+
+// parseCdCommand checks if a command is a "cd dir" command and returns the target dir.
+func parseCdCommand(cmd string) (string, bool) {
+	tokens := splitCommand(cmd)
+	if len(tokens) < 2 {
+		return "", false
+	}
+	if tokens[0] != "cd" {
+		return "", false
+	}
+	// Skip flags and --, find the last operand.
+	// After --, everything is an operand (even if it starts with -).
+	var dir string
+	operands := 0
+	afterDoubleDash := false
+	for _, tok := range tokens[1:] {
+		if tok == "--" {
+			afterDoubleDash = true
+			continue
+		}
+		if !afterDoubleDash && strings.HasPrefix(tok, "-") {
+			continue // skip flags
+		}
+		dir = tok
+		operands++
+	}
+	if dir == "" || operands != 1 {
+		return "", false
+	}
+	return dir, true
 }

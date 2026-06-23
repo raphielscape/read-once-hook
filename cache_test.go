@@ -3,8 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strconv"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -147,39 +145,42 @@ func TestAcquireFileLockTimeout(t *testing.T) {
 	}
 }
 
-func TestAcquireFileLockStalePID(t *testing.T) {
+func TestAcquireFileLockContention(t *testing.T) {
 	tmp := t.TempDir()
-	lockFile := filepath.Join(tmp, "stale.lock")
+	lockFile := filepath.Join(tmp, "contend.lock")
 
-	// Write a lock file with a PID that doesn't exist (PID 1 is init, always alive
-	// on Linux, but we can use a high number that's almost certainly unused).
-	_ = os.WriteFile(lockFile, []byte("999999999\n"), 0644)
-
-	// Should detect stale lock and succeed.
-	release := acquireFileLock(lockFile, 200*time.Millisecond)
+	// Hold the lock from a goroutine.
+	release := acquireFileLock(lockFile, time.Second)
 	if release == nil {
-		t.Fatal("expected to acquire lock after detecting stale PID")
+		t.Fatal("expected to acquire lock initially")
 	}
-	release()
+	defer release()
 
-	// Verify lock file was cleaned up.
-	if _, err := os.Stat(lockFile); !os.IsNotExist(err) {
-		t.Error("expected lock file to be removed after acquisition")
+	// Second acquisition should timeout because the lock is held.
+	release2 := acquireFileLock(lockFile, 50*time.Millisecond)
+	if release2 != nil {
+		release2()
+		t.Fatal("expected timeout on second acquisition while lock is held")
 	}
 }
 
-func TestAcquireFileLockLivePID(t *testing.T) {
+func TestAcquireFileLockFileCreated(t *testing.T) {
 	tmp := t.TempDir()
-	lockFile := filepath.Join(tmp, "live.lock")
+	lockFile := filepath.Join(tmp, "new.lock")
 
-	// Write a lock file with our own PID (we're alive).
-	_ = os.WriteFile(lockFile, []byte(strconv.Itoa(syscall.Getpid())+"\n"), 0644)
+	// Acquire should create the lock file.
+	release := acquireFileLock(lockFile, time.Second)
+	if release == nil {
+		t.Fatal("expected to acquire lock on new file")
+	}
+	if _, err := os.Stat(lockFile); os.IsNotExist(err) {
+		t.Fatal("expected lock file to be created")
+	}
+	release()
 
-	// Should timeout because our PID is alive.
-	release := acquireFileLock(lockFile, 100*time.Millisecond)
-	if release != nil {
-		release()
-		t.Fatal("expected timeout because lock holder (our PID) is alive")
+	// flock lock files stay on disk; the advisory lock is released with the fd.
+	if _, err := os.Stat(lockFile); err != nil {
+		t.Errorf("expected lock file to remain after release: %v", err)
 	}
 }
 
@@ -306,8 +307,8 @@ func TestAcquireFileLockRelease(t *testing.T) {
 	release()
 
 	// Lock file should be removed.
-	if _, err := os.Stat(lockFile); !os.IsNotExist(err) {
-		t.Error("expected lock file to be removed after release")
+	if _, err := os.Stat(lockFile); err != nil {
+		t.Errorf("expected lock file to remain after release: %v", err)
 	}
 }
 

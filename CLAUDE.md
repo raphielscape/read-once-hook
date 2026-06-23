@@ -177,13 +177,24 @@ without `offset` (even with `limit`) use just `path`. This means:
 1. **UTF-16 files silently skipped**: `isLikelyBinary` triggers on any null byte. UTF-16 LE/BE
    encoded text files are misclassified as binary. See comment in `isLikelyBinary`.
 2. **O(n) session cache scan**: see `readLastCacheEntry` comment.
-3. **Lock timeout drops writes**: see `appendJSONLine` comment.
+3. **Lock timeout drops writes**: see `appendJSONLine` comment. Uses `flock(2)` advisory locks;
+   on timeout the write is skipped (not retried).
 4. **OpenCode warn mode = no-op**: see Hook protocol (OpenCode) section above.
 5. **Static bypass list**: `shouldBypassPath` has a hardcoded list of path segments to skip
    (`.git/`, `node_modules/`, etc.). New patterns must be added manually or via
    `READ_ONCE_EXCLUDE`.
 6. **Pi extension uses sha256**: Node.js crypto has no xxhash. sha256 is ~10% slower for
    small files but negligible for our use case (one hash per tool call).
+7. **Conservative Bash command parsing**: The Bash parser extracts file paths from 30 reader
+   verbs but does not parse command-specific flags. A `head -n 5 file.txt` caches under just
+   `file.txt`, blocking all future reads of that file (including full reads). This is
+   intentionally conservative — partial reads are never served from cache.
+8. **Bash `cd` chaining**: The parser handles `cd dir && cat file` and `cd dir ; cat file`
+   patterns by resolving the file path relative to the `cd` target. This matches Codex's
+   behavior for navigating to subdirectories before reading files.
+9. **Shell wrapper unwrapping**: The parser unwraps `bash -lc 'cmd'` and `zsh -lc 'cmd'`
+   wrappers, extracting and parsing the inner command. This matches Codex's pattern of
+   wrapping commands in shell invocations.
 
 ## Environment Variables
 

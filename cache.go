@@ -79,13 +79,6 @@ func appendJSONLine(path string, v any) error {
 	return nil
 }
 
-// readLastCacheEntry performs a full O(n) sequential scan of the session cache file to find
-// the most recent entry for filePath. Each hook invocation is a fresh process, so there is
-// no cheaper persistent alternative without a daemon. In practice this is bounded: the session
-// cache is scoped to a single TTL window (default 20 min) and entries are append-only, so the
-// file size grows at roughly one line per unique file read. For typical sessions (<500 unique
-// reads) the scan completes in microseconds. Known limitation: very large sessions with
-// thousands of unique reads will degrade linearly.
 // scanJSONL calls fn for each valid JSONL line in cacheFile.
 func scanJSONL(cacheFile string, fn func(cacheEntry)) {
 	f, err := os.Open(cacheFile)
@@ -143,28 +136,21 @@ func shortHash(s string) string {
 }
 
 func acquireFileLock(lockPath string, timeout time.Duration) func() {
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil
+	}
 	deadline := time.Now().Add(timeout)
 	for {
-		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-		if err == nil {
-			_, _ = f.WriteString(strconv.Itoa(os.Getpid()))
-			_ = f.Close()
-			return func() { _ = os.Remove(lockPath) }
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return nil
-		}
-		// Lock file exists — check if the holder is still alive.
-		if b, readErr := os.ReadFile(lockPath); readErr == nil {
-			if pid, parseErr := strconv.Atoi(strings.TrimSpace(string(b))); parseErr == nil && pid > 0 {
-				if killErr := syscall.Kill(pid, 0); errors.Is(killErr, os.ErrProcessDone) || errors.Is(killErr, syscall.ESRCH) {
-					_ = os.Remove(lockPath)
-					continue
-				}
-			}
-		}
 		if time.Now().After(deadline) {
+			_ = f.Close()
 			return nil
+		}
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+			return func() {
+				_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+				_ = f.Close()
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -182,8 +168,6 @@ func runCleanup(cacheDir, snapDir string, now int64) {
 	}
 	removeOlderThan(cacheDir, "session-*.jsonl", 24*time.Hour)
 	removeOlderThan(snapDir, "*", 24*time.Hour)
-	// NOTE: stale *.lock files are handled by acquireFileLock via PID liveness
-	// check (kill(pid, 0)). No need to clean them here.
 	_ = os.WriteFile(marker, []byte(strconv.FormatInt(now, 10)+"\n"), 0o644)
 }
 
